@@ -54,18 +54,14 @@ fn show_version() -> Result<()> {
 "#};
         println!("{}", style::ocyan(logo));
     }
-    let version = format!(
-        "{version}      {os}-{arch}",
-        version = VERSION.as_str(),
-        os = OS.as_str(),
-        arch = ARCH.as_str(),
-    );
+    let version = VERSION.as_str();
     println!("{}", version);
     Ok(())
 }
 
 async fn show_latest() {
     // todo: implement latest version check
+    
 }
 
 pub static OS: Lazy<String> = Lazy::new(|| env::consts::OS.into());
@@ -86,5 +82,10 @@ pub static VERSION: Lazy<String> = Lazy::new(|| {
     if cfg!(debug_assertions) {
         v.push_str("-DEBUG");
     }
-    v
+    format!(
+        "{version}      {os}-{arch}",
+        version = v,
+        os = OS.as_str(),
+        arch = ARCH.as_str(),
+    )
 });

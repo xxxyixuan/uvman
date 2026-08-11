@@ -1,8 +1,10 @@
 mod cli;
+mod core;
 mod ui;
+
+use clap::Parser;
 pub use eyre::Result;
 pub use std::sync::LazyLock as Lazy;
-use clap::Parser;
 
 #[tokio::main]
 async fn main() -> Result<()> {

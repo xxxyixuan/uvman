@@ -1,4 +1,9 @@
-use console::{style, StyledObject};
+#![cfg_attr(
+    debug_assertions,
+    allow(dead_code, unused_imports, unused_variables, unused_mut)
+)]
+
+use console::{StyledObject, style};
 
 // 错误输出样式
 pub fn estyle<D>(val: D) -> StyledObject<D> {
