@@ -9,8 +9,8 @@ fn user_home() -> PathBuf {
 }
 
 pub fn uvman_home() -> PathBuf {
-    // test
-    if cfg!(test) {
+    // test & dbg 环境下使用 test/ 作为 home 目录，避免污染用户真实数据
+    if cfg!(test) || cfg!(debug_assertions) {
         return PathBuf::from("test");
     }
 
@@ -34,6 +34,11 @@ pub fn tools_dir() -> PathBuf {
 pub fn cache_dir() -> PathBuf {
     uvman_home().join("cache")
 }
+
+pub fn cache_tools_dir() -> PathBuf {
+    uvman_home().join("cache").join("tools")
+}
+
 pub fn src_build_dir() -> PathBuf {
     uvman_home().join("cache").join("builds")
 }
@@ -58,7 +63,10 @@ pub fn plugin_index_path() -> PathBuf {
     uvman_home().join("cache").join("plugins.json")
 }
 
-/// UVMAN_HOME 下需要确保存在的目录（首次运行自举时统一创建）
+pub fn tool_current_path() -> PathBuf {
+    config_dir().join("tool_current.toml")
+}
+
 pub fn layout_dirs() -> Vec<PathBuf> {
     vec![config_dir(), plugins_dir(), tools_dir(), cache_dir(), logs_dir()]
 }
@@ -105,7 +113,11 @@ mod tests {
         }
         // 全部目录都应位于测试 home（test/）之下
         for dir in &dirs {
-            assert!(dir.starts_with("test"), "{} must be under test/", dir.display());
+            assert!(
+                dir.starts_with("test"),
+                "{} must be under test/",
+                dir.display()
+            );
         }
     }
 }

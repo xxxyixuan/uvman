@@ -1,7 +1,9 @@
-use crate::core::error::UError;
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
+
+use serde::{Deserialize, Serialize};
+
+use crate::core::error::UError;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolPlugin {
@@ -30,7 +32,8 @@ impl ToolPlugin {
         })
     }
 
-    /// 将系统 OS/ARCH 常量经 platform.os_map / arch_map 映射为下载标识（如 windows -> win、x86_64 -> x64）
+    /// 将系统 OS/ARCH 常量经 platform.os_map / arch_map 映射为下载标识（如
+    /// windows -> win、x86_64 -> x64）
     pub fn resolve_platform(&self) -> Result<(String, String), UError> {
         let sys_os = crate::core::platform::OS.as_str();
         let sys_arch = crate::core::platform::ARCH.as_str();
@@ -59,8 +62,8 @@ impl ToolPlugin {
         Ok((os, arch))
     }
 
-    /// 将链接/路径模板（download.path、hash.path 等）中的 {key} 占位符替换为实际值；
-    /// 未提供的占位符保留原样
+    /// 将链接/路径模板（download.path、hash.path 等）中的 {key}
+    /// 占位符替换为实际值； 未提供的占位符保留原样
     pub fn render(&self, template: &str, vars: &HashMap<&str, &str>) -> String {
         let mut result = template.to_string();
         for (key, value) in vars {

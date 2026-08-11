@@ -3,6 +3,7 @@ debug
 target
 /target
 /test/*
+!/test/config
 
 **/*.rs.bk
 

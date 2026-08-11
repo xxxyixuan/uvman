@@ -1,8 +1,9 @@
+use indoc::indoc;
+
 use crate::Result;
 use crate::core::VERSION;
 use crate::core::platform::{ARCH, OS};
 use crate::ui::style;
-use indoc::indoc;
 
 /// Display the version of uvman
 #[derive(Debug, clap::Args)]

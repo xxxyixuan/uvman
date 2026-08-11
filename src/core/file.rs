@@ -1,6 +1,7 @@
-use crate::core::error::UError;
 use std::fs;
 use std::path::Path;
+
+use crate::core::error::UError;
 
 /// Ensure that the specified directory exists.
 pub fn ensure_dir(path: impl AsRef<Path>) -> Result<(), UError> {
@@ -13,8 +14,9 @@ pub fn ensure_dir(path: impl AsRef<Path>) -> Result<(), UError> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::path::PathBuf;
+
+    use super::*;
 
     #[test]
     fn test_ensure_dir_single() -> Result<(), UError> {

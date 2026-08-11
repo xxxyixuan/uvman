@@ -1,13 +1,15 @@
-use crate::core::error::UError;
-use crate::{Lazy, core};
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
 use futures_util::StreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
 use reqwest::{Client, Response};
-use std::path::{Path, PathBuf};
-use std::time::Duration;
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 use tokio::time::sleep;
+
+use crate::core::error::UError;
+use crate::{Lazy, core};
 
 pub static HTTP_CLIENT: Lazy<HttpClient> =
     Lazy::new(|| HttpClient::new(30).expect("Failed to start HTTP Client"));
@@ -23,7 +25,9 @@ impl HttpClient {
     }
 
     /// 创建 HTTP 客户端；显式指定的 proxy 优先，否则回退到全局配置中的代理
-    pub fn with_proxy(timeout: u64, proxy: Option<&str>) -> Result<Self, UError> {
+    pub fn with_proxy(
+        timeout: u64, proxy: Option<&str>,
+    ) -> Result<Self, UError> {
         let user_agent = "uvman/1.0";
         let mut builder = Client::builder()
             .timeout(Duration::from_secs(timeout))
@@ -80,7 +84,7 @@ impl HttpClient {
                         return Err(e);
                     }
                     sleep(Duration::from_secs(retry_delay)).await;
-                }
+                },
             }
         }
     }
@@ -167,16 +171,39 @@ impl HttpClient {
         }
         Ok(response)
     }
+
+    /// 以文本形式获取 URL 内容（带重试），适用于小体积文本（插件 TOML、模板等）
+    pub async fn fetch_text(
+        &self, url: &str, retries: u64, retry_delay: u64,
+    ) -> Result<String, UError> {
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            match self.try_fetch_text_once(url).await {
+                Ok(text) => return Ok(text),
+                Err(e) => {
+                    if attempt > retries {
+                        return Err(e);
+                    }
+                    sleep(Duration::from_secs(retry_delay)).await;
+                },
+            }
+        }
+    }
+
+    async fn try_fetch_text_once(&self, url: &str) -> Result<String, UError> {
+        let response = self.get(url).await?;
+        response.text().await.map_err(|source| UError::NetworkError {
+            url: url.to_string(),
+            source,
+        })
+    }
 }
 
 /// 读取全局配置中的代理地址（plugin.proxy 优先，其次 network.proxy）
 fn config_proxy() -> Option<&'static str> {
     let config = &crate::core::config::GLOBAL_CONFIG;
-    config
-        .plugin
-        .proxy
-        .as_deref()
-        .or_else(|| config.network.proxy.as_deref())
+    config.plugin.proxy.as_deref().or_else(|| config.network.proxy.as_deref())
 }
 
 /// 构造下载进度指示：已知总大小时用进度条，否则用 spinner
@@ -193,7 +220,7 @@ fn new_progress(filename: &str, total: Option<u64>) -> ProgressBar {
             );
             pb.set_message(filename.to_string());
             pb
-        }
+        },
         None => {
             let pb = ProgressBar::new_spinner();
             pb.set_style(
@@ -202,16 +229,17 @@ fn new_progress(filename: &str, total: Option<u64>) -> ProgressBar {
             );
             pb.set_message(format!("downloading {filename}"));
             pb
-        }
+        },
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use tempfile::tempdir;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    use super::*;
 
     /// 测试用客户端不继承全局配置中的代理，避免 localhost mock 请求被代理转发
     fn create_client() -> HttpClient {
@@ -267,7 +295,7 @@ mod tests {
             UError::HttpStatusError { url, status } => {
                 assert_eq!(status, 404);
                 assert!(url.contains("/missing"));
-            }
+            },
             _ => panic!("Expected HttpStatusError, got {:?}", err),
         }
     }

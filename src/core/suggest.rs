@@ -23,7 +23,8 @@ fn damerau_levenshtein(a: &str, b: &str) -> usize {
         curr[0] = i;
         for j in 1..=m {
             let cost = usize::from(a[i - 1] != b[j - 1]);
-            curr[j] = (prev[j] + 1).min(curr[j - 1] + 1).min(prev[j - 1] + cost);
+            curr[j] =
+                (prev[j] + 1).min(curr[j - 1] + 1).min(prev[j - 1] + cost);
             // 相邻转置：a[i-2..i] 与 b[j-2..j] 互为反转
             if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
                 curr[j] = curr[j].min(prev2[j - 2] + 1);

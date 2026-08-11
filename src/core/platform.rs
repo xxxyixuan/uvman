@@ -1,5 +1,6 @@
-use crate::Lazy;
 use std::env;
+
+use crate::Lazy;
 
 pub static OS: Lazy<String> = Lazy::new(|| env::consts::OS.into());
 

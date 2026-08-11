@@ -8,9 +8,10 @@ pub mod plugin;
 pub mod suggest;
 mod types;
 
-use crate::Lazy;
 pub use types::*;
 use versions::Versioning;
+
+use crate::Lazy;
 
 pub(crate) static VERSION: Lazy<Versioning> = Lazy::new(|| {
     let mut v = env!("CARGO_PKG_VERSION").to_string();

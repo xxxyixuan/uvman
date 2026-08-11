@@ -1,14 +1,19 @@
+use std::fs;
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use serde::{Deserialize, Serialize};
+use url::Url;
+
 use crate::cli::plugin::PluginCommand::*;
 use crate::core::config::GLOBAL_CONFIG;
 use crate::core::error::UError;
 use crate::core::http::HTTP_CLIENT;
 use crate::core::http::HttpClient;
+use crate::core::paths::{plugin_path, plugins_dir};
 use crate::core::plugin::ToolPlugin;
-use serde::{Deserialize, Serialize};
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
-use url::Url;
 
 const DEFAULT_REPO_URL: &str = "https://github.com/xxxyixuan/uvman-plugin";
 
@@ -69,6 +74,7 @@ pub struct InstallArgs {
     /// The name of the plugin to install
     ///
     /// e.g.: make, node
+    #[clap(value_parser = validate_plugin_name_arg)]
     pub plugin: String,
 
     /// URL of the plugin source
@@ -86,14 +92,14 @@ pub struct InstallArgs {
 
 impl InstallArgs {
     pub async fn run(&self) -> Result<(), UError> {
-        let plugin_dir = crate::core::paths::plugins_dir();
+        let plugin_dir = plugins_dir();
         if !plugin_dir.exists() {
             fs::create_dir_all(&plugin_dir).map_err(|source| {
                 UError::FileError { path: plugin_dir.clone(), source }
             })?;
         }
 
-        let target_path = plugin_dir.join(format!("{}.toml", self.plugin));
+        let target_path = plugin_path(&self.plugin);
         if target_path.exists() && !self.force {
             return Err(UError::PluginAlreadyExists {
                 name: self.plugin.clone(),
@@ -113,9 +119,61 @@ impl InstallArgs {
     }
 }
 
+fn install_from_local_path(
+    local_path: &str, target_path: &Path,
+) -> Result<(), UError> {
+    let local_path = Path::new(local_path);
+    if !local_path.exists() {
+        return Err(UError::PathNotFound { path: local_path.to_path_buf() });
+    }
+    if !local_path.is_file() {
+        return Err(UError::NotAFile { path: local_path.to_path_buf() });
+    }
+    let content = fs::read_to_string(local_path).map_err(|source| {
+        UError::FileError { path: local_path.to_path_buf(), source }
+    })?;
+    // 安装前校验 TOML 合法性，避免覆盖好的插件写入损坏文件
+    let _ = parse_plugin_toml(&content, &name_from_target(target_path))?;
+    fs::write(target_path, &content).map_err(|source| UError::FileError {
+        path: target_path.to_path_buf(),
+        source,
+    })?;
+    Ok(())
+}
+
+async fn install_from_url(url: &str, target_path: &Path) -> Result<(), UError> {
+    let content = HTTP_CLIENT
+        .fetch_text(
+            url,
+            GLOBAL_CONFIG.network.retries.unwrap_or(0),
+            GLOBAL_CONFIG.network.retry_delay.unwrap_or(0),
+        )
+        .await?;
+    // 安装前校验 TOML 合法性，避免写入损坏文件
+    let _ = parse_plugin_toml(&content, &name_from_target(target_path))?;
+    fs::write(target_path, &content).map_err(|source| UError::FileError {
+        path: target_path.to_path_buf(),
+        source,
+    })?;
+    Ok(())
+}
+
+async fn install_from_remote(
+    plugin_name: &str, target_path: &Path,
+) -> Result<(), UError> {
+    let repo = repo_url();
+    let url = raw_plugin_url(&repo, plugin_name)?;
+    install_from_url(&url, target_path).await
+}
+
+fn name_from_target(target: &Path) -> String {
+    target.file_stem().and_then(|s| s.to_str()).unwrap_or("unknown").to_string()
+}
+
 #[derive(Debug, clap::Args)]
 pub struct UninstallArgs {
     /// The name of the plugin to uninstall
+    #[clap(value_parser = validate_plugin_name_arg)]
     pub plugin: String,
 
     /// Skip confirmation prompt
@@ -134,16 +192,11 @@ impl UninstallArgs {
             });
         }
 
-        if !self.yes {
-            use std::io::{self, Write};
-            print!("Remove plugin '{}'? [y/N] ", self.plugin);
-            io::stdout().flush()?;
-            let mut input = String::new();
-            io::stdin().read_line(&mut input)?;
-            if !input.trim().eq_ignore_ascii_case("y") {
-                println!("Aborted.");
-                return Ok(());
-            }
+        if !self.yes
+            && !confirm(&format!("Remove plugin '{}'? [y/N] ", self.plugin))?
+        {
+            println!("Aborted.");
+            return Ok(());
         }
         fs::remove_file(&plugin_path).map_err(|source| UError::FileError {
             path: plugin_path.clone(),
@@ -190,94 +243,37 @@ impl ListArgs {
     async fn list_remote_plugins(&self) -> Result<(), UError> {
         let cache_path = crate::core::paths::plugin_index_path();
         let mut names: Vec<String> = if cache_path.exists() {
-            if !self.json {
-                crate::ui::report::print_warning(
-                    "using cached plugin index; run `uvman plugin sync` to refresh",
-                );
+            match load_plugin_index() {
+                Ok(index) => {
+                    if !self.json {
+                        crate::ui::report::print_warning(
+                            "using cached plugin index; run `uvman plugin sync` to refresh",
+                        );
+                    }
+                    index.plugins
+                },
+                Err(e) => {
+                    // 缓存损坏时回退远端获取；警告走 stderr，不污染 --json 的
+                    // stdout
+                    crate::ui::report::print_warning(&format!(
+                        "cached plugin index is corrupted ({e}), falling back to remote"
+                    ));
+                    fetch_remote_plugin_names().await?
+                },
             }
-            load_plugin_index()?.plugins
         } else {
-            let url = repo_url();
-            let (owner, repo) =
-                extract_github_owner_repo(&url).ok_or_else(|| {
-                    UError::InvalidGitHubUrl { url: url.to_string() }
-                })?;
-            let items = fetch_repository_contents(&owner, &repo).await?;
-            items
-                .iter()
-                .filter(|item| is_toml_file(item))
-                .filter_map(|item| {
-                    item.get("name")
-                        .and_then(serde_json::Value::as_str)
-                        .map(|n| n.trim_end_matches(".toml").to_string())
-                })
-                .collect()
+            fetch_remote_plugin_names().await?
         };
 
         names.retain(|n| self.matches_filter(n));
-        names.sort();
-        names.dedup();
-
-        if self.json {
-            print_json_array(&names)?;
-        } else {
-            println!("Available plugins:");
-            if names.is_empty() {
-                println!("  (none)");
-            } else {
-                for name in names {
-                    println!("- {}", name);
-                }
-            }
-        }
-        Ok(())
+        print_plugin_names(names, "Available plugins", self.json)
     }
 
     fn list_local_plugins(&self) -> Result<(), UError> {
-        let plugin_dir = crate::core::paths::plugins_dir();
-
-        let entries = fs::read_dir(&plugin_dir).map_err(|source| {
-            UError::FileError { path: plugin_dir.clone(), source }
-        })?;
-        let mut names = Vec::new();
-        for entry in entries {
-            let entry = entry?;
-            let path = entry.path();
-            if path.is_file()
-                && path.extension().and_then(|e| e.to_str()) == Some("toml")
-            {
-                let file_stem = path
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("unknown");
-                names.push(file_stem.to_string());
-            }
-        }
+        let mut names = list_installed_plugin_names()?;
         names.retain(|n| self.matches_filter(n));
-        names.sort();
-        if self.json {
-            print_json_array(&names)?;
-        } else {
-            println!("Local plugins:");
-            if names.is_empty() {
-                println!("  (none)");
-            } else {
-                for name in names {
-                    println!("- {}", name);
-                }
-            }
-        }
-
-        Ok(())
+        print_plugin_names(names, "Local plugins", self.json)
     }
-}
-
-/// 以 JSON 数组形式输出名称列表（供脚本消费）
-fn print_json_array(names: &[String]) -> Result<(), UError> {
-    let json = serde_json::to_string_pretty(names)
-        .map_err(|source| UError::JsonError { source })?;
-    println!("{}", json);
-    Ok(())
 }
 
 #[derive(Debug, clap::Args)]
@@ -285,6 +281,7 @@ pub struct UpgradeArgs {
     /// The name of the plugin to upgrade
     ///
     /// e.g.: make, node
+    #[clap(value_parser = validate_plugin_name_arg)]
     pub name: Option<String>,
 
     /// URL of the plugin source to upgrade from
@@ -313,38 +310,53 @@ pub struct UpgradeArgs {
     pub yes: bool,
 }
 
-/// 单个插件的升级结果（供批量升级统计）
 enum UpgradeOutcome {
     Upgraded,
     UpToDate,
 }
 
+enum VersionComparison {
+    /// 新版本更高（或版本缺失/非 semver 无法比较，按用户升级意图继续）
+    Upgradable,
+    /// 版本相同，已是最新
+    UpToDate { current: String },
+    /// 新版本更低，阻止降级
+    Downgrade { current: String, remote: String },
+}
+
+fn compare_versions(
+    current: Option<&str>, new: Option<&str>,
+) -> VersionComparison {
+    match (current, new) {
+        (Some(cur), Some(new)) => {
+            match (semver::Version::parse(cur), semver::Version::parse(new)) {
+                (Ok(c), Ok(n)) if n < c => VersionComparison::Downgrade {
+                    current: cur.to_string(),
+                    remote: new.to_string(),
+                },
+                (Ok(c), Ok(n)) if n == c => {
+                    VersionComparison::UpToDate { current: cur.to_string() }
+                },
+                _ => VersionComparison::Upgradable,
+            }
+        },
+        _ => VersionComparison::Upgradable,
+    }
+}
+
 impl UpgradeArgs {
     pub async fn run(&self) -> Result<(), UError> {
         match (&self.name, self.all) {
-            (Some(name), _) => self.upgrade_one(name, !self.yes).await.map(|_| ()),
+            (Some(name), _) => {
+                self.upgrade_one(name, !self.yes).await.map(|_| ())
+            },
             (None, true) => self.upgrade_all().await,
             (None, false) => Err(UError::MissingPluginTarget),
         }
     }
 
     async fn upgrade_all(&self) -> Result<(), UError> {
-        let plugin_dir = crate::core::paths::plugins_dir();
-        let entries = fs::read_dir(&plugin_dir).map_err(|source| {
-            UError::FileError { path: plugin_dir.clone(), source }
-        })?;
-        let mut names = Vec::new();
-        for entry in entries {
-            let entry = entry?;
-            let path = entry.path();
-            if path.is_file()
-                && path.extension().and_then(|e| e.to_str()) == Some("toml")
-                && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
-            {
-                names.push(stem.to_string());
-            }
-        }
-        names.sort();
+        let names = list_installed_plugin_names()?;
 
         if names.is_empty() {
             println!("No plugins installed.");
@@ -386,7 +398,7 @@ impl UpgradeArgs {
 
     /// 升级单个插件：先取新版本内容并比较版本，仅更高版本才覆盖。
     async fn upgrade_one(
-        &self, name: &str, confirm: bool,
+        &self, name: &str, do_confirm: bool,
     ) -> Result<UpgradeOutcome, UError> {
         let plugin_path = crate::core::paths::plugin_path(name);
 
@@ -405,27 +417,25 @@ impl UpgradeArgs {
             .ok()
             .and_then(|p| p.tool.version);
 
-        // 版本比较：阻止降级，跳过已最新
-        if let (Some(cur), Some(new)) =
-            (current_version.as_deref(), new_version.as_deref())
-            && let (Ok(c), Ok(n)) = (
-                semver::Version::parse(cur),
-                semver::Version::parse(new),
-            )
-        {
-            if n < c {
+        // 版本比较：阻止降级，跳过已最新；版本缺失或非 semver
+        // 时按用户升级意图继续
+        match compare_versions(
+            current_version.as_deref(),
+            new_version.as_deref(),
+        ) {
+            VersionComparison::Downgrade { current, remote } => {
                 return Err(UError::PluginDowngrade {
                     name: name.to_string(),
-                    current: cur.to_string(),
-                    remote: new.to_string(),
+                    current,
+                    remote,
                 });
-            }
-            if n == c {
-                println!("Plugin '{name}' is already up to date ({cur}).");
+            },
+            VersionComparison::UpToDate { current } => {
+                println!("Plugin '{name}' is already up to date ({current}).");
                 return Ok(UpgradeOutcome::UpToDate);
-            }
+            },
+            VersionComparison::Upgradable => {},
         }
-        // 版本缺失或非 semver 时无法比较，按用户显式升级意图继续
 
         let current = current_version.as_deref().unwrap_or("unknown");
         let new = new_version.as_deref().unwrap_or("unknown");
@@ -435,16 +445,13 @@ impl UpgradeArgs {
             return Ok(UpgradeOutcome::Upgraded);
         }
 
-        if confirm {
-            print!("Upgrade plugin '{name}' ({current} -> {new})? [y/N] ");
-            use std::io::{self, Write};
-            io::stdout().flush()?;
-            let mut input = String::new();
-            io::stdin().read_line(&mut input)?;
-            if !input.trim().eq_ignore_ascii_case("y") {
-                println!("Aborted.");
-                return Ok(UpgradeOutcome::UpToDate);
-            }
+        if do_confirm
+            && !confirm(&format!(
+                "Upgrade plugin '{name}' ({current} -> {new})? [y/N] "
+            ))?
+        {
+            println!("Aborted.");
+            return Ok(UpgradeOutcome::UpToDate);
         }
 
         fs::write(&plugin_path, &new_content).map_err(|source| {
@@ -477,17 +484,20 @@ impl UpgradeArgs {
                 raw_plugin_url(&repo, name)?
             },
         };
-        let response = HTTP_CLIENT.get(&url).await?;
-        let text = response.text().await.map_err(|source| {
-            UError::NetworkError { url: url.clone(), source }
-        })?;
-        Ok(text)
+        HTTP_CLIENT
+            .fetch_text(
+                &url,
+                GLOBAL_CONFIG.network.retries.unwrap_or(0),
+                GLOBAL_CONFIG.network.retry_delay.unwrap_or(0),
+            )
+            .await
     }
 }
 
 #[derive(Debug, clap::Args)]
 pub struct InfoArgs {
     /// Name of the plugin to inspect
+    #[clap(value_parser = validate_plugin_name_arg)]
     pub name: String,
 
     /// Query the remote registry instead of the local plugin
@@ -528,16 +538,13 @@ impl InfoArgs {
             UError::SimpleError(format!("Invalid registry URL: {}", repo))
         })?;
         let download_url = raw_plugin_url(&url, &self.name)?;
-        let response = HTTP_CLIENT.get(&download_url).await?;
-        let bytes = response.bytes().await.map_err(|e| {
-            UError::NetworkError { url: download_url.clone(), source: e }
-        })?;
-        let content = String::from_utf8(bytes.to_vec()).map_err(|_| {
-            UError::SimpleError(format!(
-                "plugin '{}' is not valid UTF-8",
-                self.name
-            ))
-        })?;
+        let content = HTTP_CLIENT
+            .fetch_text(
+                &download_url,
+                GLOBAL_CONFIG.network.retries.unwrap_or(0),
+                GLOBAL_CONFIG.network.retry_delay.unwrap_or(0),
+            )
+            .await?;
         let plugin = parse_plugin_toml(&content, &self.name)?;
         print_plugin_info(&plugin, None, self.json)
     }
@@ -556,9 +563,8 @@ impl InfoArgs {
                     author: None,
                     version: None,
                 };
-                let json = serde_json::to_string_pretty(&out).map_err(
-                    |source| UError::JsonError { source },
-                )?;
+                let json = serde_json::to_string_pretty(&out)
+                    .map_err(|source| UError::JsonError { source })?;
                 println!("{}", json);
             } else {
                 println!("Plugin '{}' is not installed.", self.name);
@@ -583,9 +589,8 @@ fn print_plugin_info(
             author: plugin.tool.author.clone(),
             version: plugin.tool.version.clone(),
         };
-        let json = serde_json::to_string_pretty(&out).map_err(|source| {
-            UError::JsonError { source }
-        })?;
+        let json = serde_json::to_string_pretty(&out)
+            .map_err(|source| UError::JsonError { source })?;
         println!("{}", json);
     } else {
         println!("Plugin: {}", plugin.tool.name);
@@ -596,7 +601,7 @@ fn print_plugin_info(
             println!("Author(s): {}", authors.join(", "));
         }
         if let Some(version) = &plugin.tool.version {
-            println!("VERSION: {}", version);
+            println!("Version: {}", version);
         }
     }
     Ok(())
@@ -614,10 +619,8 @@ pub struct SyncArgs {
 impl SyncArgs {
     pub async fn run(&self) -> Result<(), UError> {
         let url = repo_url();
-        let (owner, repo) =
-            extract_github_owner_repo(&url).ok_or_else(|| {
-                UError::InvalidGitHubUrl { url: url.to_string() }
-            })?;
+        let (owner, repo) = extract_github_owner_repo(&url)
+            .ok_or_else(|| UError::InvalidGitHubUrl { url: url.to_string() })?;
         let items = fetch_repository_contents_with_proxy(
             &owner,
             &repo,
@@ -625,15 +628,7 @@ impl SyncArgs {
         )
         .await?;
 
-        let mut names: Vec<String> = items
-            .iter()
-            .filter(|item| is_toml_file(item))
-            .filter_map(|item| {
-                item.get("name")
-                    .and_then(serde_json::Value::as_str)
-                    .map(|n| n.trim_end_matches(".toml").to_string())
-            })
-            .collect();
+        let mut names = extract_plugin_names_from_items(&items);
         names.sort();
         names.dedup();
 
@@ -675,9 +670,8 @@ impl CreateArgs {
 
         let output_dir =
             self.output.clone().unwrap_or_else(|| PathBuf::from("."));
-        fs::create_dir_all(&output_dir).map_err(|source| UError::FileError {
-            path: output_dir.clone(),
-            source,
+        fs::create_dir_all(&output_dir).map_err(|source| {
+            UError::FileError { path: output_dir.clone(), source }
         })?;
 
         let target = output_dir.join(format!("{}.toml", self.name));
@@ -703,8 +697,6 @@ impl CreateArgs {
     }
 }
 
-/// 加载脚手架模板：优先使用插件仓库中的 templates/template.toml
-/// （带完整注释，由仓库维护者统一演进），离线或仓库无模板时回退内置模板
 async fn load_template(name: &str) -> String {
     let url = match template_raw_url() {
         Ok(url) => url,
@@ -720,19 +712,15 @@ async fn load_template(name: &str) -> String {
     embedded_template(name)
 }
 
-/// 插件仓库中模板文件的 raw 地址
 fn template_raw_url() -> Result<String, UError> {
     let repo = repo_url();
-    let (owner, repo_name) =
-        extract_github_owner_repo(&repo).ok_or_else(|| {
-            UError::InvalidGitHubUrl { url: repo.to_string() }
-        })?;
+    let (owner, repo_name) = extract_github_owner_repo(&repo)
+        .ok_or_else(|| UError::InvalidGitHubUrl { url: repo.to_string() })?;
     Ok(format!(
         "https://raw.githubusercontent.com/{owner}/{repo_name}/HEAD/templates/template.toml"
     ))
 }
 
-/// 内置统一模板（bin 为默认安装方式，src 以注释形式给出）
 fn embedded_template(name: &str) -> String {
     format!(
         r#"# uvman plugin: {name}
@@ -829,15 +817,204 @@ bin_dir = "bin"
     )
 }
 
+// ---------- 共享工具函数（被 ≥2 个命令使用） ----------
+
+// 输出辅助
+fn print_plugin_names(
+    mut names: Vec<String>, title: &str, json: bool,
+) -> Result<(), UError> {
+    names.sort();
+    names.dedup();
+    if json {
+        print_json_array(&names)
+    } else {
+        println!("{title}:");
+        if names.is_empty() {
+            println!("  (none)");
+        } else {
+            for name in names {
+                println!("- {}", name);
+            }
+        }
+        Ok(())
+    }
+}
+
+fn print_json_array(names: &[String]) -> Result<(), UError> {
+    let json = serde_json::to_string_pretty(names)
+        .map_err(|source| UError::JsonError { source })?;
+    println!("{}", json);
+    Ok(())
+}
+
+fn confirm(prompt: &str) -> Result<bool, UError> {
+    print!("{prompt}");
+    io::stdout().flush()?;
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    Ok(input.trim().eq_ignore_ascii_case("y"))
+}
+
+// 名称校验与已安装插件扫描
 fn validate_plugin_name(name: &str) -> Result<(), UError> {
     if name.is_empty()
-        || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
     {
         return Err(UError::InvalidPluginName { name: name.to_string() });
     }
     Ok(())
 }
 
+fn validate_plugin_name_arg(s: &str) -> Result<String, String> {
+    validate_plugin_name(s).map(|_| s.to_string()).map_err(|e| e.to_string())
+}
+
+fn list_installed_plugin_names() -> Result<Vec<String>, UError> {
+    let plugin_dir = crate::core::paths::plugins_dir();
+    if !plugin_dir.exists() {
+        return Ok(Vec::new());
+    }
+    let entries = fs::read_dir(&plugin_dir).map_err(|source| {
+        UError::FileError { path: plugin_dir.clone(), source }
+    })?;
+    let mut names = Vec::new();
+    for entry in entries {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_file()
+            && path.extension().and_then(|e| e.to_str()) == Some("toml")
+            && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
+        {
+            names.push(stem.to_string());
+        }
+    }
+    names.sort();
+    Ok(names)
+}
+
+fn did_you_mean_installed(name: &str) -> Vec<String> {
+    let installed = list_installed_plugin_names().unwrap_or_default();
+    crate::core::suggest::did_you_mean(name, &installed)
+}
+
+// 仓库与 URL 解析
+fn repo_url() -> Url {
+    match Url::parse(GLOBAL_CONFIG.plugin.repo.as_str()) {
+        Ok(url) => url,
+        Err(e) => {
+            warn_repo_url_fallback(&e);
+            Url::parse(DEFAULT_REPO_URL).expect("default URL is valid")
+        },
+    }
+}
+
+fn warn_repo_url_fallback(err: &url::ParseError) {
+    static WARNED: AtomicBool = AtomicBool::new(false);
+    if !WARNED.swap(true, Ordering::Relaxed) {
+        crate::ui::report::print_warning(&format!(
+            "invalid plugin repo URL '{}' in config ({err}); using default",
+            GLOBAL_CONFIG.plugin.repo
+        ));
+    }
+}
+
+fn raw_plugin_url(repo_url: &Url, name: &str) -> Result<String, UError> {
+    let (owner, repo) =
+        extract_github_owner_repo(repo_url).ok_or_else(|| {
+            UError::InvalidGitHubUrl { url: repo_url.to_string() }
+        })?;
+    Ok(format!(
+        "https://raw.githubusercontent.com/{owner}/{repo}/HEAD/{name}.toml"
+    ))
+}
+
+fn parse_plugin_toml(content: &str, name: &str) -> Result<ToolPlugin, UError> {
+    toml::from_str::<ToolPlugin>(content).map_err(|source| UError::TomlError {
+        path: PathBuf::from(format!("{name}.toml")),
+        source,
+    })
+}
+
+// GitHub API
+async fn fetch_repository_contents_with_proxy(
+    owner: &str, repo: &str, proxy: Option<&str>,
+) -> Result<Vec<serde_json::Value>, UError> {
+    let api_url =
+        format!("https://api.github.com/repos/{}/{}/contents", owner, repo);
+
+    let client = HttpClient::with_proxy(30, proxy)?;
+    // get 内部已校验状态码，失败时返回 NetworkError /
+    // HttpStatusError（保留错误链）
+    let response = client.get(&api_url).await?;
+
+    let items: Vec<serde_json::Value> =
+        response.json().await.map_err(|source| UError::NetworkError {
+            url: api_url.clone(),
+            source,
+        })?;
+    Ok(items)
+}
+
+async fn fetch_repository_contents(
+    owner: &str, repo: &str,
+) -> Result<Vec<serde_json::Value>, UError> {
+    fetch_repository_contents_with_proxy(owner, repo, None).await
+}
+
+async fn fetch_remote_plugin_names() -> Result<Vec<String>, UError> {
+    let url = repo_url();
+    let (owner, repo) = extract_github_owner_repo(&url)
+        .ok_or_else(|| UError::InvalidGitHubUrl { url: url.to_string() })?;
+    let items = fetch_repository_contents(&owner, &repo).await?;
+    Ok(extract_plugin_names_from_items(&items))
+}
+
+fn extract_plugin_names_from_items(items: &[serde_json::Value]) -> Vec<String> {
+    items
+        .iter()
+        .filter(|item| is_toml_file(item))
+        .filter_map(|item| {
+            item.get("name")
+                .and_then(serde_json::Value::as_str)
+                .map(|n| n.trim_end_matches(".toml").to_string())
+        })
+        .collect()
+}
+
+fn extract_github_owner_repo(url: &Url) -> Option<(String, String)> {
+    let host = url.host_str()?;
+    if !(host == "github.com" || host == "www.github.com") {
+        return None;
+    }
+
+    let segments: Vec<&str> = url.path_segments()?.collect();
+    if segments.len() < 2 {
+        return None;
+    }
+
+    let owner = segments[0].to_string();
+    let repo = segments[1].trim_end_matches(".git").to_string();
+    if owner.is_empty() || repo.is_empty() {
+        return None;
+    }
+    Some((owner, repo))
+}
+
+fn is_toml_file(item: &serde_json::Value) -> bool {
+    let is_file =
+        item.get("type").and_then(serde_json::Value::as_str) == Some("file");
+
+    let is_toml = item
+        .get("name")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|name| name.ends_with(".toml"));
+
+    is_file && is_toml
+}
+
+// 插件索引缓存
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PluginIndex {
     repo: String,
@@ -872,145 +1049,6 @@ fn save_plugin_index(index: &PluginIndex) -> Result<(), UError> {
         .map_err(|source| UError::JsonError { source })?;
     fs::write(&path, content)
         .map_err(|source| UError::FileError { path: path.clone(), source })
-}
-
-fn install_from_local_path(src: &str, target: &Path) -> Result<(), UError> {
-    let src_path = Path::new(src);
-    if !src_path.exists() {
-        return Err(UError::PathNotFound { path: src_path.to_path_buf() });
-    }
-    if !src_path.is_file() {
-        return Err(UError::NotAFile { path: src_path.to_path_buf() });
-    }
-    fs::copy(src_path, target).map_err(|source| UError::FileError {
-        path: src_path.to_path_buf(),
-        source,
-    })?;
-    Ok(())
-}
-
-async fn install_from_url(url: &str, target: &Path) -> Result<(), UError> {
-    HTTP_CLIENT
-        .download_to(
-            url,
-            target,
-            GLOBAL_CONFIG.network.retries.unwrap_or(0),
-            GLOBAL_CONFIG.network.retry_delay.unwrap_or(0),
-        )
-        .await?;
-    Ok(())
-}
-
-async fn install_from_remote(
-    plugin: &str, target: &Path,
-) -> Result<(), UError> {
-    let repo = repo_url();
-    let url = raw_plugin_url(&repo, plugin)?;
-    install_from_url(&url, target).await
-}
-
-fn raw_plugin_url(repo_url: &Url, name: &str) -> Result<String, UError> {
-    let (owner, repo) =
-        extract_github_owner_repo(repo_url).ok_or_else(|| {
-            UError::InvalidGitHubUrl { url: repo_url.to_string() }
-        })?;
-    Ok(format!(
-        "https://raw.githubusercontent.com/{owner}/{repo}/HEAD/{name}.toml"
-    ))
-}
-
-/// 插件仓库地址（全局配置优先，解析失败回退默认仓库）
-fn repo_url() -> Url {
-    Url::parse(GLOBAL_CONFIG.plugin.repo.as_str()).unwrap_or_else(|_| {
-        Url::parse(DEFAULT_REPO_URL).expect("default URL is valid")
-    })
-}
-
-/// 解析插件 TOML 内容（升级前校验新内容合法，避免覆盖坏文件）
-fn parse_plugin_toml(content: &str, name: &str) -> Result<ToolPlugin, UError> {
-    toml::from_str::<ToolPlugin>(content).map_err(|source| UError::TomlError {
-        path: PathBuf::from(format!("{name}.toml")),
-        source,
-    })
-}
-
-async fn fetch_repository_contents_with_proxy(
-    owner: &str, repo: &str, proxy: Option<&str>,
-) -> Result<Vec<serde_json::Value>, UError> {
-    let api_url =
-        format!("https://api.github.com/repos/{}/{}/contents", owner, repo);
-
-    let client = HttpClient::with_proxy(30, proxy)?;
-    // get 内部已校验状态码，失败时返回 NetworkError / HttpStatusError（保留错误链）
-    let response = client.get(&api_url).await?;
-
-    let items: Vec<serde_json::Value> = response.json().await.map_err(
-        |source| UError::NetworkError {
-            url: api_url.clone(),
-            source,
-        },
-    )?;
-    Ok(items)
-}
-
-async fn fetch_repository_contents(
-    owner: &str, repo: &str,
-) -> Result<Vec<serde_json::Value>, UError> {
-    fetch_repository_contents_with_proxy(owner, repo, None).await
-}
-
-/// 从已安装插件中找出与给定名称拼写相近的候选（did you mean）
-fn did_you_mean_installed(name: &str) -> Vec<String> {
-    let dir = crate::core::paths::plugins_dir();
-    let installed: Vec<String> = fs::read_dir(&dir)
-        .map(|entries| {
-            entries
-                .filter_map(|e| e.ok())
-                .map(|e| e.path())
-                .filter(|p| {
-                    p.is_file()
-                        && p.extension().and_then(|e| e.to_str()) == Some("toml")
-                })
-                .filter_map(|p| {
-                    p.file_stem()
-                        .and_then(|s| s.to_str())
-                        .map(str::to_string)
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    crate::core::suggest::did_you_mean(name, &installed)
-}
-
-fn extract_github_owner_repo(url: &Url) -> Option<(String, String)> {
-    let host = url.host_str()?;
-    if !(host == "github.com" || host == "www.github.com") {
-        return None;
-    }
-
-    let segments: Vec<&str> = url.path_segments()?.collect();
-    if segments.len() < 2 {
-        return None;
-    }
-
-    let owner = segments[0].to_string();
-    let repo = segments[1].trim_end_matches(".git").to_string();
-    if owner.is_empty() || repo.is_empty() {
-        return None;
-    }
-    Some((owner, repo))
-}
-
-fn is_toml_file(item: &serde_json::Value) -> bool {
-    let is_file =
-        item.get("type").and_then(serde_json::Value::as_str) == Some("file");
-
-    let is_toml = item
-        .get("name")
-        .and_then(serde_json::Value::as_str)
-        .is_some_and(|name| name.ends_with(".toml"));
-
-    is_file && is_toml
 }
 
 #[cfg(test)]
@@ -1094,5 +1132,64 @@ mod tests {
         assert_eq!(loaded.repo, index.repo);
         assert_eq!(loaded.fetched_at, index.fetched_at);
         assert_eq!(loaded.plugins, index.plugins);
+
+        fs::remove_file(crate::core::paths::plugin_index_path()).unwrap();
+    }
+
+    #[test]
+    fn test_validate_plugin_name_arg() {
+        assert_eq!(validate_plugin_name_arg("node").unwrap(), "node");
+        assert!(validate_plugin_name_arg("../evil").is_err());
+        assert!(validate_plugin_name_arg("a b").is_err());
+    }
+
+    #[test]
+    fn test_compare_versions() {
+        // 新版本更高 → 可升级
+        assert!(matches!(
+            compare_versions(Some("1.0.0"), Some("1.1.0")),
+            VersionComparison::Upgradable
+        ));
+        // 版本相同 → 已最新
+        assert!(matches!(
+            compare_versions(Some("1.0.0"), Some("1.0.0")),
+            VersionComparison::UpToDate { .. }
+        ));
+        // 新版本更低 → 阻止降级
+        assert!(matches!(
+            compare_versions(Some("1.1.0"), Some("1.0.0")),
+            VersionComparison::Downgrade { .. }
+        ));
+        // 任一版本缺失或非 semver → 按升级意图继续
+        assert!(matches!(
+            compare_versions(None, Some("1.0.0")),
+            VersionComparison::Upgradable
+        ));
+        assert!(matches!(
+            compare_versions(Some("1.0.0"), None),
+            VersionComparison::Upgradable
+        ));
+        assert!(matches!(
+            compare_versions(Some("not-a-version"), Some("1.0.0")),
+            VersionComparison::Upgradable
+        ));
+    }
+
+    #[test]
+    fn test_extract_plugin_names_from_items() {
+        let items = vec![
+            serde_json::json!({"type": "file", "name": "node.toml"}),
+            serde_json::json!({"type": "dir", "name": "src"}),
+            serde_json::json!({"type": "file", "name": "README.md"}),
+            serde_json::json!({"type": "file", "name": "make.toml"}),
+        ];
+        let names = extract_plugin_names_from_items(&items);
+        assert_eq!(names, vec!["node".to_string(), "make".to_string()]);
+    }
+
+    #[test]
+    fn test_list_installed_plugin_names_missing_dir() {
+        // 目录不存在时应返回空列表而非报错（升级/列表场景容错）
+        assert!(list_installed_plugin_names().is_ok());
     }
 }

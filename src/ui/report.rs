@@ -58,11 +58,13 @@ pub fn print_error(err: &UError) -> u8 {
         }
     }
 
-    // mise 风格 footer：底层错误告知自助调试出口（hint 已能解决的语义错误不打扰）
+    // mise 风格 footer：底层错误告知自助调试出口（hint
+    // 已能解决的语义错误不打扰）
     if err.has_source() && verbose() == 0 {
         eprintln!(
             "{}",
-            crate::ui::style::estyle("run with --verbose for more details").dim()
+            crate::ui::style::estyle("run with --verbose for more details")
+                .dim()
         );
     }
     err.exit_code()
@@ -117,9 +119,5 @@ fn render_backticks(msg: &str) {
 }
 
 fn styled_code(cmd: &str) -> String {
-    if color_enabled() {
-        egreen(cmd).to_string()
-    } else {
-        cmd.to_string()
-    }
+    if color_enabled() { egreen(cmd).to_string() } else { cmd.to_string() }
 }

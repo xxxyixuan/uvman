@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+
 use thiserror::Error;
 
 /// 修复建议：一句说明 + 若干可整行复制的命令。
@@ -126,6 +127,10 @@ pub enum UError {
     /// 请求的版本不存在
     #[error("version {version} not found for {tool}")]
     VersionNotFound { tool: String, version: String },
+
+    /// 目标版本已安装（不 `--force` 时阻止重复安装）
+    #[error("{tool}@{version} is already installed")]
+    AlreadyInstalled { tool: String, version: String },
 }
 
 impl UError {
@@ -184,6 +189,10 @@ impl UError {
             Self::FileExists { .. } => Hint {
                 message: "choose another name, or remove the existing file first".into(),
                 commands: vec![],
+            },
+            Self::AlreadyInstalled { tool, version } => Hint {
+                message: "to reinstall and overwrite the existing files, run:".into(),
+                commands: vec![format!("uvman install {tool}@{version} --force")],
             },
             // 网络层失败统一提示代理配置（GitHub 相关域名在部分网络需代理访问）
             Self::NetworkError { .. } | Self::ProxyError { .. } => Hint {

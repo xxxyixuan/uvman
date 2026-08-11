@@ -1,4 +1,6 @@
 mod info;
+mod install;
+mod list;
 pub(crate) mod plugin;
 pub(crate) mod version;
 
@@ -28,6 +30,8 @@ pub enum Commands {
     Version(version::Version),
     Info(info::Info),
     Plugin(plugin::Plugin),
+    Install(install::Install),
+    List(list::List),
 }
 
 impl Commands {
@@ -36,6 +40,8 @@ impl Commands {
             Commands::Version(cmd) => cmd.run().await,
             Commands::Info(cmd) => cmd.run(),
             Commands::Plugin(cmd) => cmd.run().await,
+            Commands::Install(cmd) => cmd.run().await,
+            Commands::List(cmd) => cmd.run().await,
         }
     }
 }

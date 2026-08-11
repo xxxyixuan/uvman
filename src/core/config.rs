@@ -1,17 +1,17 @@
-use crate::Lazy;
-use crate::core::error::UError;
-use crate::core::{SingleOrArray, paths};
-use indoc::indoc;
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
+use indoc::indoc;
+use serde::{Deserialize, Serialize};
+
+use crate::Lazy;
+use crate::core::error::UError;
+use crate::core::{SingleOrArray, paths};
+
 pub static GLOBAL_CONFIG: Lazy<UvmanConfig> = Lazy::new(|| {
     let path = paths::global_config_path();
     UvmanConfig::load_from(&path).unwrap_or_else(|e| {
-        // 配置文件缺失（首次运行）属正常状态，静默使用默认值；
-        // 仅当文件存在但读取/解析失败时才告警
         if !is_missing_config(&e) {
             crate::ui::report::print_warning(&format!(
                 "failed to load config {}, using defaults: {e}",
@@ -36,11 +36,6 @@ pub const DEFAULT_CONFIG: &str = indoc!(
     r#"
 # UVMAN 全局配置文件
 
-# 当前使用的工具版本
-# e.g.:
-# node = "20.0.0"
-[tools.current]
-
 # 插件仓库配置
 [plugin]
 repo = "https://github.com/xxxyixuan/uvman-plugin"
@@ -61,6 +56,13 @@ repo = "https://github.com/xxxyixuan/uvman-plugin"
 # retries = 3
 # retry_delay = 2
 # proxy = "http://proxy.example.com:8080"
+
+# 缓存设置
+[cache]
+# 下载档案在 cache/tools/ 中的保留时长（小时），超期后随下次安装自动清理
+# 0 表示完全不保留缓存（安装完成后立即删除压缩包）
+# 未配置时默认 24
+# ttl = 24
 
 # 激活后注入 Shell 的环境变量
 # e.g.:
@@ -89,9 +91,6 @@ pub fn ensure_default_config() -> Result<(), UError> {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UvmanConfig {
     #[serde(default)]
-    pub tools: ToolsConfig,
-
-    #[serde(default)]
     pub plugin: PluginConfig,
 
     #[serde(default)]
@@ -99,6 +98,9 @@ pub struct UvmanConfig {
 
     #[serde(default)]
     pub network: NetworkConfig,
+
+    #[serde(default)]
+    pub cache: CacheConfig,
 
     #[serde(default)]
     pub env: HashMap<String, String>,
@@ -114,12 +116,6 @@ impl UvmanConfig {
             source,
         })
     }
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ToolsConfig {
-    #[serde(default)]
-    pub current: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -142,6 +138,13 @@ pub struct NetworkConfig {
 
     #[serde(default)]
     pub proxy: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CacheConfig {
+    /// 下载档案保留时长（小时）；0 表示安装完成后立即删除
+    #[serde(default)]
+    pub ttl: Option<u64>,
 }
 
 #[cfg(test)]

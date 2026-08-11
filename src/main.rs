@@ -1,13 +1,14 @@
 mod app;
 mod cli;
 mod core;
+mod toolset;
 mod ui;
+
+use core::error::UError;
+pub use std::sync::LazyLock as Lazy;
 
 use clap::Parser;
 pub use eyre::Result;
-pub use std::sync::LazyLock as Lazy;
-
-use core::error::UError;
 
 fn main() -> std::process::ExitCode {
     let result = app::init().and_then(|()| _main());
@@ -17,7 +18,8 @@ fn main() -> std::process::ExitCode {
             let want_debug = std::env::var_os("RUST_BACKTRACE")
                 .is_some_and(|v| v != "0")
                 || ui::report::verbose() > 0;
-            // 默认只输出用户可读信息；--verbose / RUST_BACKTRACE 时输出详细调试报告
+            // 默认只输出用户可读信息；--verbose / RUST_BACKTRACE
+            // 时输出详细调试报告
             let code = if want_debug {
                 eprintln!("{report:?}");
                 1
@@ -27,7 +29,7 @@ fn main() -> std::process::ExitCode {
                 ui::report::print_error_message(&report.to_string())
             };
             std::process::ExitCode::from(code)
-        }
+        },
     }
 }
 
