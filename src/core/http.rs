@@ -1,12 +1,16 @@
-use crate::core;
 use crate::core::error::UError;
+use crate::{Lazy, core};
 use futures_util::StreamExt;
-use reqwest::Client;
+use indicatif::{ProgressBar, ProgressStyle};
+use reqwest::{Client, Response};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 use tokio::time::sleep;
+
+pub static HTTP_CLIENT: Lazy<HttpClient> =
+    Lazy::new(|| HttpClient::new(30).expect("Failed to start HTTP Client"));
 
 #[derive(Debug, Clone)]
 pub struct HttpClient {
@@ -14,60 +18,69 @@ pub struct HttpClient {
 }
 
 impl HttpClient {
-    pub fn new(timeout: usize) -> Result<Self, UError> {
+    pub fn new(timeout: u64) -> Result<Self, UError> {
+        Self::with_proxy(timeout, None)
+    }
+
+    /// 创建 HTTP 客户端；显式指定的 proxy 优先，否则回退到全局配置中的代理
+    pub fn with_proxy(timeout: u64, proxy: Option<&str>) -> Result<Self, UError> {
         let user_agent = "uvman/1.0";
-        let client = Client::builder()
-            .timeout(Duration::from_secs(timeout as u64))
-            .user_agent(user_agent)
-            .build()
-            .map_err(|e| UError::NetworkError {
-                url: "builder".to_string(),
-                source: e,
+        let mut builder = Client::builder()
+            .timeout(Duration::from_secs(timeout))
+            .user_agent(user_agent);
+
+        // 显式指定的 proxy 优先，否则回退到全局配置中的代理
+        let proxy_url: Option<String> = match proxy {
+            Some(p) => Some(p.to_string()),
+            None => config_proxy().map(str::to_string),
+        };
+        if let Some(p) = proxy_url {
+            let proxy = reqwest::Proxy::all(&p).map_err(|source| {
+                UError::ProxyError { url: p.clone(), source }
             })?;
+            builder = builder.proxy(proxy);
+        }
+
+        let client = builder.build().map_err(|e| {
+            UError::SimpleError(format!("failed to build HTTP client: {e}"))
+        })?;
         Ok(Self { client })
     }
 
-    pub fn default() -> Result<Self, UError> {
-        Self::new(30)
-    }
-
-    /// Download the file to the specified directory and return the downloaded file path.
-    ///
-    /// # Arguments
-    /// * `url` - The URL of the file to download
-    /// * `dest_dir` - The directory to download the file to
-    /// * `retries` - The number of times to retry the download
-    /// * `retry_delay` - The delay between retries in seconds
-    /// # Returns
-    /// * `Ok(PathBuf)` - The path of the downloaded file
-    /// * `Err(UError)` - An error if the download fails
     pub async fn download(
-        &self, url: &str, dest_dir: &str, retries: usize, retry_delay: usize,
+        &self, url: &str, dest_dir: &str, retries: u64, retry_delay: u64,
     ) -> Result<PathBuf, UError> {
         let filename = url
             .split("/")
             .last()
-            .and_then(|s| if s.is_empty() { None } else { Some(s) })
+            .filter(|s| !s.is_empty())
             .unwrap_or("download")
             .to_string();
 
         let dest_path = Path::new(dest_dir).join(&filename);
-        let dest_dir_path = Path::new(dest_dir);
+        self.download_to(url, &dest_path, retries, retry_delay).await
+    }
 
-        core::file::ensure_dir(dest_dir_path)?;
+    /// 下载到指定目标路径（带重试与原子写入）
+    pub async fn download_to(
+        &self, url: &str, dest_path: &Path, retries: u64, retry_delay: u64,
+    ) -> Result<PathBuf, UError> {
+        if let Some(dir) = dest_path.parent() {
+            core::file::ensure_dir(dir)?;
+        }
 
         // retry loop
         let mut attempt = 0;
         loop {
             attempt += 1;
-            match self.try_download_once(url, &dest_path).await {
+            match self.try_download_once(url, dest_path).await {
                 Ok(path) => return Ok(path),
                 Err(e) => {
                     if attempt > retries {
                         return Err(e);
                     }
-                    sleep(Duration::from_secs(retry_delay as u64)).await;
-                },
+                    sleep(Duration::from_secs(retry_delay)).await;
+                }
             }
         }
     }
@@ -91,6 +104,20 @@ impl HttpClient {
         let temp_filename = format!(".tmp_{}", std::process::id());
         let temp_path = temp_dir.join(temp_filename);
 
+        // 下载进度条：已知 Content-Length 用进度条，未知用 spinner；
+        // quiet 模式下不显示
+        let progress = if crate::ui::report::quiet() {
+            None
+        } else {
+            Some(new_progress(
+                dest_path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("download"),
+                response.content_length(),
+            ))
+        };
+
         let mut file = File::create(&temp_path).await.map_err(|e| {
             UError::FileError { path: temp_path.clone(), source: e }
         })?;
@@ -101,10 +128,16 @@ impl HttpClient {
                 url: url.to_string(),
                 source: e,
             })?;
+            if let Some(pb) = &progress {
+                pb.inc(chunk.len() as u64);
+            }
             file.write_all(&chunk).await.map_err(|e| UError::FileError {
                 path: temp_path.clone(),
                 source: e,
             })?;
+        }
+        if let Some(pb) = &progress {
+            pb.finish_and_clear();
         }
 
         file.sync_all().await.map_err(|e| UError::FileError {
@@ -119,6 +152,58 @@ impl HttpClient {
 
         Ok(dest_path.to_path_buf())
     }
+
+    pub async fn get(&self, url: &str) -> Result<Response, UError> {
+        let response = self.client.get(url).send().await.map_err(|e| {
+            UError::NetworkError { url: url.to_string(), source: e }
+        })?;
+
+        let status = response.status();
+        if !status.is_success() {
+            return Err(UError::HttpStatusError {
+                url: url.to_string(),
+                status: status.as_u16(),
+            });
+        }
+        Ok(response)
+    }
+}
+
+/// 读取全局配置中的代理地址（plugin.proxy 优先，其次 network.proxy）
+fn config_proxy() -> Option<&'static str> {
+    let config = &crate::core::config::GLOBAL_CONFIG;
+    config
+        .plugin
+        .proxy
+        .as_deref()
+        .or_else(|| config.network.proxy.as_deref())
+}
+
+/// 构造下载进度指示：已知总大小时用进度条，否则用 spinner
+fn new_progress(filename: &str, total: Option<u64>) -> ProgressBar {
+    match total {
+        Some(len) => {
+            let pb = ProgressBar::new(len);
+            pb.set_style(
+                ProgressStyle::with_template(
+                    "{spinner:.green} {msg} [{bar:30.cyan/blue}] {bytes}/{total_bytes} ({eta})",
+                )
+                .expect("valid progress template")
+                .progress_chars("#>-"),
+            );
+            pb.set_message(filename.to_string());
+            pb
+        }
+        None => {
+            let pb = ProgressBar::new_spinner();
+            pb.set_style(
+                ProgressStyle::with_template("{spinner:.green} {msg} {bytes}")
+                    .expect("valid progress template"),
+            );
+            pb.set_message(format!("downloading {filename}"));
+            pb
+        }
+    }
 }
 
 #[cfg(test)]
@@ -128,8 +213,14 @@ mod tests {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
+    /// 测试用客户端不继承全局配置中的代理，避免 localhost mock 请求被代理转发
     fn create_client() -> HttpClient {
-        HttpClient::default().unwrap()
+        let client = Client::builder()
+            .timeout(Duration::from_secs(30))
+            .user_agent("uvman/1.0")
+            .build()
+            .unwrap();
+        HttpClient { client }
     }
 
     #[tokio::test]
@@ -147,7 +238,7 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let dest_dir = temp_dir.path().to_str().unwrap();
 
-        let client = HttpClient::default().unwrap();
+        let client = create_client();
         let result_path = client.download(&url, dest_dir, 2, 0).await.unwrap();
 
         let actual = tokio::fs::read(&result_path).await.unwrap();
@@ -170,13 +261,13 @@ mod tests {
         let dest_dir = temp_dir.path().to_str().unwrap();
 
         let client = create_client();
-        let err = client.download(&url, dest_dir, 1, 0).await.unwrap_err();
+        let err = client.download(&url, dest_dir, 2, 0).await.unwrap_err();
 
         match err {
             UError::HttpStatusError { url, status } => {
                 assert_eq!(status, 404);
                 assert!(url.contains("/missing"));
-            },
+            }
             _ => panic!("Expected HttpStatusError, got {:?}", err),
         }
     }
