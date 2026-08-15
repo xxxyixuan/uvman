@@ -1,3 +1,5 @@
+mod info;
+pub(crate) mod plugin;
 pub(crate) mod version;
 
 use crate::Result;
@@ -16,20 +18,24 @@ pub struct Cli {
     #[clap(short = 'q', long, global = true)]
     pub quiet: bool,
 
-    /// Show extra output
-    #[clap(short = 'v', long, global = true, default_value_t = 0,action = clap::ArgAction::Count)]
+    /// Show extra output (full error report on failure)
+    #[clap(short = 'v', long, global = true, default_value_t = 0, action = clap::ArgAction::Count)]
     pub verbose: u8,
 }
 
 #[derive(clap::Subcommand)]
 pub enum Commands {
     Version(version::Version),
+    Info(info::Info),
+    Plugin(plugin::Plugin),
 }
 
 impl Commands {
     pub async fn run(self) -> Result<()> {
         match self {
             Commands::Version(cmd) => cmd.run().await,
+            Commands::Info(cmd) => cmd.run(),
+            Commands::Plugin(cmd) => cmd.run().await,
         }
     }
 }

@@ -1,10 +1,8 @@
-use crate::Lazy;
 use crate::Result;
+use crate::core::VERSION;
+use crate::core::platform::{ARCH, OS};
 use crate::ui::style;
 use indoc::indoc;
-use std::convert::Into;
-use std::env;
-use versions::Versioning;
 
 /// Display the version of uvman
 #[derive(Debug, clap::Args)]
@@ -26,8 +24,9 @@ impl Version {
     }
 
     async fn print_json(&self) -> Result<()> {
+        let version = VERSION.to_string();
         let json = serde_json::json!({
-            "version": VERSION.as_str(),
+            "version": version,
             "latest": "",
             "os": OS.as_str(),
             "arch": ARCH.as_str(),
@@ -46,46 +45,26 @@ impl Version {
 fn show_version() -> Result<()> {
     if console::user_attended() {
         let logo: &str = indoc! {r#"
-   __  __ _    __ __  ___ ___     _   __
-  / / / /| |  / //  |/  //   |   / | / /
- / / / / | | / // /|_/ // /| |  /  |/ /
-/ /_/ /  | |/ // /  / // ___ | / /|  /
-\____/   |___//_/  /_//_/  |_|/_/ |_/
-"#};
+           __  __ _    __ __  ___ ___     _   __
+          / / / /| |  / //  |/  //   |   / | / /
+         / / / / | | / // /|_/ // /| |  /  |/ /
+        / /_/ /  | |/ // /  / // ___ | / /|  /
+        \____/   |___//_/  /_//_/  |_|/_/ |_/
+        "#};
         println!("{}", style::ocyan(logo));
     }
-    let version = VERSION.as_str();
-    println!("{}", version);
+    println!(
+        "{}",
+        format!(
+            "{version}      {os}-{arch}",
+            version = VERSION.to_string(),
+            os = OS.as_str(),
+            arch = ARCH.as_str(),
+        )
+    );
     Ok(())
 }
 
 async fn show_latest() {
     // todo: implement latest version check
-    
 }
-
-pub static OS: Lazy<String> = Lazy::new(|| env::consts::OS.into());
-pub static ARCH: Lazy<String> = Lazy::new(|| {
-    match env::consts::ARCH {
-        "x86_64" => "x64",
-        "aarch64" => "arm64",
-        _ => env::consts::ARCH,
-    }
-    .to_string()
-});
-
-pub(crate) static V: Lazy<Versioning> =
-    Lazy::new(|| Versioning::new(env!("CARGO_PKG_VERSION")).unwrap());
-
-pub static VERSION: Lazy<String> = Lazy::new(|| {
-    let mut v = V.to_string();
-    if cfg!(debug_assertions) {
-        v.push_str("-DEBUG");
-    }
-    format!(
-        "{version}      {os}-{arch}",
-        version = v,
-        os = OS.as_str(),
-        arch = ARCH.as_str(),
-    )
-});
