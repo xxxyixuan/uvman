@@ -2,7 +2,7 @@
 debug
 target
 /target
-
+/test/*
 
 **/*.rs.bk
 
