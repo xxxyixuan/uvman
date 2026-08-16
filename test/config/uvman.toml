@@ -1,0 +1,29 @@
+# UVMAN 全局配置文件
+
+# 插件仓库配置
+[plugin]
+repo = "https://github.com/xxxyixuan/uvman-plugin"
+# proxy = "http://127.0.0.1:7890"
+
+# 全局下载镜像源
+# 优先级高于插件自带的镜像配置
+# e.g.:
+# node = [
+#   "https://npmmirror.com/mirrors/node",
+#   "http://mirrors.cloud.tencent.com/npm/"
+# ]
+[registry]
+
+# 全局网络设置
+[network]
+# timeout = 300
+# retries = 3
+# retry_delay = 2
+# proxy = "http://proxy.example.com:8080"
+
+# 缓存设置
+[cache]
+# 下载档案在 cache/tools/ 中的保留时长（小时），超期后随下次安装自动清理
+# 0 表示完全不保留缓存（安装完成后立即删除压缩包）
+# 未配置时默认 24
+# ttl = 24
