@@ -1,0 +1,14 @@
+debug
+target
+/target
+/test/*
+
+**/*.rs.bk
+
+*.pdb
+
+**/mutants.out*/
+
+.idea/
+.trae/
+.tmp/
