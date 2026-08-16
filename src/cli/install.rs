@@ -26,15 +26,12 @@ impl Install {
         let plan = crate::toolset::plan(&tool, version.as_deref()).await?;
 
         // 已安装且未 --force 时阻止重复安装
-        if plan.install_dir.exists() {
-            if !self.force {
-                return Err(UError::AlreadyInstalled {
-                    tool: tool.clone(),
-                    version: plan.version.clone(),
-                }
-                .into());
+        if plan.install_dir.exists() && !self.force {
+            return Err(UError::AlreadyInstalled {
+                tool: tool.clone(),
+                version: plan.version.clone(),
             }
-            fs::remove_dir_all(&plan.install_dir)?;
+            .into());
         }
 
         println!(
@@ -44,17 +41,52 @@ impl Install {
                 plan.name, plan.version
             ))
         );
-        crate::toolset::execute(&plan).await?;
-        println!(
-            "{}",
-            style::ogreen(format!(
-                "Installed {}@{} to {}",
-                plan.name,
-                plan.version,
-                plan.install_dir.display()
-            ))
-        );
-        Ok(())
+
+        // --force 覆盖：旧目录先改名备份而非直接删除；安装失败时
+        // 回滚，避免"旧的已删、新的没装"导致机器上什么都不剩
+        let backup = if plan.install_dir.exists() {
+            let mut backup_name = plan.install_dir.clone().into_os_string();
+            backup_name.push(".uvman_bak");
+            let backup = std::path::PathBuf::from(backup_name);
+            // 上一次失败可能留下残留备份，先清掉
+            let _ = fs::remove_dir_all(&backup);
+            fs::rename(&plan.install_dir, &backup)?;
+            Some(backup)
+        } else {
+            None
+        };
+
+        match crate::toolset::execute(&plan).await {
+            Ok(()) => {
+                if let Some(backup) = &backup {
+                    let _ = fs::remove_dir_all(backup);
+                }
+                println!(
+                    "{}",
+                    style::ogreen(format!(
+                        "Installed {}@{} to {}",
+                        plan.name,
+                        plan.version,
+                        plan.install_dir.display()
+                    ))
+                );
+                Ok(())
+            },
+            Err(e) => {
+                // 清理半成品安装目录；有备份则回滚旧版本
+                let _ = fs::remove_dir_all(&plan.install_dir);
+                if let Some(backup) = &backup
+                    && fs::rename(backup, &plan.install_dir).is_err()
+                {
+                    crate::ui::report::print_warning(&format!(
+                        "failed to restore previous installation from {}; \
+                         recover it manually",
+                        backup.display()
+                    ));
+                }
+                Err(e.into())
+            },
+        }
     }
 }
 
@@ -64,7 +96,7 @@ impl Install {
 /// - 指定版本可为具体版本号（`20.11.0`）、部分版本（`22`）或代号（`latest`/
 ///   `lts`/`nightly`）； 代号到具体版本的解析发生在 `toolset::plan`
 ///   阶段（需要插件 release 数据）
-fn parse_spec(spec: &str) -> Result<(String, Option<String>), UError> {
+pub(crate) fn parse_spec(spec: &str) -> Result<(String, Option<String>), UError> {
     let (tool, version) = match spec.split_once('@') {
         Some((t, v)) => (t, v),
         None => (spec, ""),

@@ -21,7 +21,9 @@ repo = "https://github.com/xxxyixuan/uvman-plugin"
 # retry_delay = 2
 # proxy = "http://proxy.example.com:8080"
 
-# 激活后注入 Shell 的环境变量
-# e.g.:
-# JAVA_HOME = "{UVMAN_HOME}/tools/java/{current}"
-[env]
+# 缓存设置
+[cache]
+# 下载档案在 cache/tools/ 中的保留时长（小时），超期后随下次安装自动清理
+# 0 表示完全不保留缓存（安装完成后立即删除压缩包）
+# 未配置时默认 24
+# ttl = 24

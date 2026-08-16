@@ -8,6 +8,7 @@ pub enum SingleOrArray<T> {
 }
 
 impl<T> SingleOrArray<T> {
+    #[allow(dead_code)] // 供反序列化辅助使用
     pub fn items(&self) -> Vec<&T> {
         match self {
             SingleOrArray::Single(v) => vec![v],
@@ -15,6 +16,7 @@ impl<T> SingleOrArray<T> {
         }
     }
 
+    #[allow(dead_code)] // 供反序列化辅助使用
     pub fn into_vec(self) -> Vec<T> {
         match self {
             SingleOrArray::Single(v) => vec![v],

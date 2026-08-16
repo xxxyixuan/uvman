@@ -43,6 +43,7 @@ pub enum UError {
 
     /// 无效 URL
     #[error("'{url}' is not a valid URL")]
+    #[allow(dead_code)] // 预留：通用 URL 校验错误
     InvalidUrl { url: String },
 
     /// 插件名非法
@@ -118,6 +119,7 @@ pub enum UError {
 
     /// 源码编译失败
     #[error("build failed: {message}")]
+    #[allow(dead_code)] // 预留：源码构建错误
     BuildError { message: String },
 
     /// 当前平台无匹配的安装方案
@@ -189,6 +191,13 @@ impl UError {
             Self::FileExists { .. } => Hint {
                 message: "choose another name, or remove the existing file first".into(),
                 commands: vec![],
+            },
+            Self::VersionNotFound { tool, .. } => Hint {
+                message: format!(
+                    "list installed versions with `uvman list {tool}`, \
+                     or published ones with:"
+                ),
+                commands: vec![format!("uvman list {tool} --remote")],
             },
             Self::AlreadyInstalled { tool, version } => Hint {
                 message: "to reinstall and overwrite the existing files, run:".into(),

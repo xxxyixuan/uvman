@@ -63,11 +63,6 @@ repo = "https://github.com/xxxyixuan/uvman-plugin"
 # 0 表示完全不保留缓存（安装完成后立即删除压缩包）
 # 未配置时默认 24
 # ttl = 24
-
-# 激活后注入 Shell 的环境变量
-# e.g.:
-# JAVA_HOME = "{UVMAN_HOME}/tools/java/{current}"
-[env]
 "#
 );
 
@@ -101,9 +96,6 @@ pub struct UvmanConfig {
 
     #[serde(default)]
     pub cache: CacheConfig,
-
-    #[serde(default)]
-    pub env: HashMap<String, String>,
 }
 
 impl UvmanConfig {

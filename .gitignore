@@ -3,6 +3,7 @@ debug
 target
 /target
 /test/*
+# 测试自举生成的默认配置样例入库；其余（tools/cache/plugins）均为运行残留
 !/test/config
 
 **/*.rs.bk

@@ -1,10 +1,12 @@
 pub mod config;
+pub mod current;
 pub mod error;
 pub mod file;
 pub mod http;
 pub mod paths;
 pub mod platform;
 pub mod plugin;
+pub mod shell;
 pub mod suggest;
 mod types;
 

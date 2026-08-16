@@ -1,8 +1,10 @@
-mod info;
+mod activate;
+mod env;
 mod install;
 mod list;
-pub(crate) mod plugin;
+mod plugin;
 pub(crate) mod version;
+mod use_;
 
 use crate::Result;
 
@@ -28,20 +30,24 @@ pub struct Cli {
 #[derive(clap::Subcommand)]
 pub enum Commands {
     Version(version::Version),
-    Info(info::Info),
     Plugin(plugin::Plugin),
     Install(install::Install),
     List(list::List),
+    Use(use_::Use),
+    Env(env::Env),
+    Activate(activate::Activate),
 }
 
 impl Commands {
     pub async fn run(self) -> Result<()> {
         match self {
             Commands::Version(cmd) => cmd.run().await,
-            Commands::Info(cmd) => cmd.run(),
             Commands::Plugin(cmd) => cmd.run().await,
             Commands::Install(cmd) => cmd.run().await,
             Commands::List(cmd) => cmd.run().await,
+            Commands::Use(cmd) => cmd.run().await,
+            Commands::Env(cmd) => cmd.run(),
+            Commands::Activate(cmd) => cmd.run(),
         }
     }
 }

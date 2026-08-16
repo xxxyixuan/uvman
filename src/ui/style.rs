@@ -1,6 +1,7 @@
+#![allow(dead_code)] // 该模块是语义化配色库，部分函数当前未用到；保留供 UI 层随时取用
 #![cfg_attr(
     debug_assertions,
-    allow(dead_code, unused_imports, unused_variables, unused_mut)
+    allow(unused_imports, unused_variables, unused_mut)
 )]
 
 use console::{StyledObject, style};

@@ -11,8 +11,17 @@ use tokio::time::sleep;
 use crate::core::error::UError;
 use crate::{Lazy, core};
 
-pub static HTTP_CLIENT: Lazy<HttpClient> =
-    Lazy::new(|| HttpClient::new(30).expect("Failed to start HTTP Client"));
+/// 未配置 `[network] timeout` 时的默认超时（秒）
+const DEFAULT_TIMEOUT_SECS: u64 = 30;
+
+pub static HTTP_CLIENT: Lazy<HttpClient> = Lazy::new(|| {
+    // 超时跟随全局配置（[network] timeout），缺省 30 秒
+    let timeout = crate::core::config::GLOBAL_CONFIG
+        .network
+        .timeout
+        .unwrap_or(DEFAULT_TIMEOUT_SECS);
+    HttpClient::new(timeout).expect("Failed to start HTTP Client")
+});
 
 #[derive(Debug, Clone)]
 pub struct HttpClient {
@@ -51,6 +60,7 @@ impl HttpClient {
         Ok(Self { client })
     }
 
+    #[allow(dead_code)] // 预留：由 URL 推断文件名下载到目录
     pub async fn download(
         &self, url: &str, dest_dir: &str, retries: u64, retry_delay: u64,
     ) -> Result<PathBuf, UError> {
@@ -92,6 +102,20 @@ impl HttpClient {
     async fn try_download_once(
         &self, url: &str, dest_path: &Path,
     ) -> Result<PathBuf, UError> {
+        let temp_path = tmp_sibling(dest_path);
+        let result = self
+            .try_download_to_temp(url, dest_path, &temp_path)
+            .await;
+        // 失败清理半成品 .tmp，避免缓存目录残留垃圾
+        if result.is_err() {
+            let _ = tokio::fs::remove_file(&temp_path).await;
+        }
+        result
+    }
+
+    async fn try_download_to_temp(
+        &self, url: &str, dest_path: &Path, temp_path: &Path,
+    ) -> Result<PathBuf, UError> {
         let response = self.client.get(url).send().await.map_err(|e| {
             UError::NetworkError { url: url.to_string(), source: e }
         })?;
@@ -103,10 +127,6 @@ impl HttpClient {
                 status: status.as_u16(),
             });
         }
-
-        let temp_dir = dest_path.parent().unwrap_or(Path::new("."));
-        let temp_filename = format!(".tmp_{}", std::process::id());
-        let temp_path = temp_dir.join(temp_filename);
 
         // 下载进度条：已知 Content-Length 用进度条，未知用 spinner；
         // quiet 模式下不显示
@@ -122,8 +142,8 @@ impl HttpClient {
             ))
         };
 
-        let mut file = File::create(&temp_path).await.map_err(|e| {
-            UError::FileError { path: temp_path.clone(), source: e }
+        let mut file = File::create(temp_path).await.map_err(|e| {
+            UError::FileError { path: temp_path.to_path_buf(), source: e }
         })?;
 
         let mut stream = response.bytes_stream();
@@ -136,22 +156,23 @@ impl HttpClient {
                 pb.inc(chunk.len() as u64);
             }
             file.write_all(&chunk).await.map_err(|e| UError::FileError {
-                path: temp_path.clone(),
+                path: temp_path.to_path_buf(),
                 source: e,
             })?;
         }
         if let Some(pb) = &progress {
-            pb.finish_and_clear();
+            // 保留满条显示（不清除），与安装/完成消息衔接
+            pb.finish();
         }
 
         file.sync_all().await.map_err(|e| UError::FileError {
-            path: temp_path.clone(),
+            path: temp_path.to_path_buf(),
             source: e,
         })?;
         drop(file);
 
-        tokio::fs::rename(&temp_path, dest_path).await.map_err(|e| {
-            UError::FileError { path: temp_path.clone(), source: e }
+        tokio::fs::rename(temp_path, dest_path).await.map_err(|e| {
+            UError::FileError { path: temp_path.to_path_buf(), source: e }
         })?;
 
         Ok(dest_path.to_path_buf())
@@ -204,6 +225,12 @@ impl HttpClient {
 fn config_proxy() -> Option<&'static str> {
     let config = &crate::core::config::GLOBAL_CONFIG;
     config.plugin.proxy.as_deref().or_else(|| config.network.proxy.as_deref())
+}
+
+/// 下载半成品的临时文件路径（与目标同目录，前缀 `.tmp_` + 进程号）
+fn tmp_sibling(dest_path: &Path) -> PathBuf {
+    let temp_dir = dest_path.parent().unwrap_or(Path::new("."));
+    temp_dir.join(format!(".tmp_{}", std::process::id()))
 }
 
 /// 构造下载进度指示：已知总大小时用进度条，否则用 spinner
