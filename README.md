@@ -13,7 +13,10 @@
 `uvman` 是一个轻量级、插件化的开发工具版本管理器。它统一了 Node.js、Python、Go、Rust
 等主流开发工具的安装与切换流程，让你用同一套命令管理所有工具的多个版本——下载、解压、路径注入、版本切换，一行命令搞定。
 
-```
+```bash
+# 1. 安装 Node.js plugin
+uvman plugin install node
+# 2. 安装使用 Node.js 22.19.0
 uvman use node@22
 ```
 
@@ -71,14 +74,14 @@ python:
 
 **Linux / macOS（一键脚本）：**
 
-```sh-session
-$ curl -fsSL https://raw.githubusercontent.com/xxxyixuan/uvman/main/scripts/install.sh | bash
+```bash
+curl -fsSL https://raw.githubusercontent.com/xxxyixuan/uvman/main/scripts/install.sh | bash
 ```
 
 **Windows（PowerShell）：**
 
-```sh-session
-PS> powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/xxxyixuan/uvman/main/scripts/install.ps1 | iex"
+```bash
+powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/xxxyixuan/uvman/main/scripts/install.ps1 | iex"
 ```
 
 **手动安装：**
@@ -91,20 +94,33 @@ PS> powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubuserconte
 
 在 Shell 配置末尾追加激活语句（自动刷新当前版本）：
 
-```sh-session
-# bash
-$ echo 'eval "$(uvman activate)"' >> ~/.bashrc
+- bash
 
-# zsh
-$ echo 'eval "$(uvman activate)"' >> ~/.zshrc
+```bash
+echo 'eval "$(uvman activate)"' >> ~/.bashrc
+```
 
-# fish
-$ echo 'uvman activate | source' >> ~/.config/fish/config.fish
+- zsh
 
-# PowerShell
-$ echo 'uvman activate | Out-String | Invoke-Expression' >> $PROFILE
+```bash
+echo 'eval "$(uvman activate)"' >> ~/.zshrc
+```
 
-# cmd
+- fish
+
+```bash
+echo 'uvman activate | source' >> ~/.config/fish/config.fish
+```
+
+- PowerShell
+
+```bash
+echo 'uvman activate | Out-String | Invoke-Expression' >> $PROFILE
+```
+
+- cmd
+
+```bash
 # 使用 AutoRun 启动注入，或手动刷新
 ```
 
@@ -112,7 +128,7 @@ $ echo 'uvman activate | Out-String | Invoke-Expression' >> $PROFILE
 
 ### 使用
 
-```sh-session
+```bash
 $ uvman install node@22          # 安装指定版本
 $ uvman install node@latest      # 安装最新版
 $ uvman install node@lts         # 安装 LTS 版
@@ -136,15 +152,6 @@ $ uvman list node --remote       # 查看远端可用版本
 | `uvman version`                  | 显示版本信息（别名 `v`，`-V` 可用），`--json` 输出结构化信息                                        |
 
 ## 工作原理
-
-```mermaid
-flowchart LR
-    U[uvman CLI] --> P[插件 TOML]
-    P --> R[下载来源 & 版本接口]
-    U --> D[下载 / 校验 / 解压]
-    U --> S[状态文件 tool_current.toml]
-    S --> E[uvman env 注入 shell]
-```
 
 ### 插件即配置
 
@@ -192,7 +199,7 @@ uvman plugin create         # 新建自定义插件
 
 ### 环境要求
 
-- Rust 1.70+
+- Rust 1.85+
 - Cargo
 
 ### 构建与测试
