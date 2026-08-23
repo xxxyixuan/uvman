@@ -1,4 +1,4 @@
-#![allow(dead_code)] // 该模块是语义化配色库，部分函数当前未用到；保留供 UI 层随时取用
+#![allow(dead_code)] // Semantic color helpers; some are not yet used but kept for the UI layer
 #![cfg_attr(
     debug_assertions,
     allow(unused_imports, unused_variables, unused_mut)
@@ -6,7 +6,7 @@
 
 use console::{StyledObject, style};
 
-// 错误输出样式
+// Stderr (error) output styles
 pub fn estyle<D>(val: D) -> StyledObject<D> {
     style(val).for_stderr()
 }
@@ -44,7 +44,7 @@ pub fn ebold<D>(val: D) -> StyledObject<D> {
     estyle(val).bold()
 }
 
-// 普通输出样式
+// Stdout (normal) output styles
 pub fn ostyle<D>(val: D) -> StyledObject<D> {
     style(val).for_stdout()
 }

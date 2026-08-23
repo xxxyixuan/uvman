@@ -9,7 +9,7 @@ use crate::core::platform::{ARCH, OS};
 use crate::ui::report;
 use crate::ui::style;
 
-/// GitHub Releases 的 API 地址（仅发布到 GitHub Release，不发布 crates.io）
+/// GitHub Releases API (uvman is only published to GitHub Releases, not crates.io)
 const RELEASES_API_URL: &str =
     "https://api.github.com/repos/xxxyixuan/uvman/releases/latest";
 
@@ -34,7 +34,7 @@ impl Version {
 
     async fn print_json(&self) -> Result<()> {
         let version = VERSION.to_string();
-        // 尽力获取最新版本；失败时留空，不阻断 JSON 输出
+        // Best-effort latest check; blank on failure so it never blocks JSON out
         let latest = fetch_latest_tag()
             .await
             .unwrap_or_else(|_| String::new())
@@ -77,8 +77,9 @@ fn show_version() -> Result<()> {
     Ok(())
 }
 
-/// 从 GitHub Release 检查最新版本；检查失败静默抑制，不打断 `uvman version`。
-/// 未开启静默时，相比当前版本更新则打印升级提示（仅交互终端）。
+/// Best-effort check for a newer GitHub release; failures are suppressed so
+/// they never break `uvman version`. When not quiet, prints an upgrade hint
+/// only on an interactive terminal.
 async fn show_latest() {
     if report::quiet() || !console::user_attended() {
         return;
@@ -86,7 +87,7 @@ async fn show_latest() {
     let Ok(tag) = fetch_latest_tag().await else {
         return;
     };
-    // 远端 tag 去掉前导 `v` 再比较
+    // strip the leading `v` from the remote tag before comparing
     let Ok(latest) = Semver::parse(tag.trim_start_matches(['v', 'V'])) else {
         return;
     };
@@ -103,8 +104,9 @@ async fn show_latest() {
     );
 }
 
-/// 拉取 GitHub 最新 release 的 tag 名；独立短超时（3s），
-/// 任何失败（含超时）返回 Err（静默抑制，不阻塞版本输出）
+/// Fetch the tag of the latest GitHub release. Uses a short independent
+/// timeout (3s); any failure (including timeout) returns Err and is
+/// suppressed by callers so it never blocks version output.
 async fn fetch_latest_tag() -> Result<String, UError> {
     const CHECK_TIMEOUT: Duration = Duration::from_secs(3);
     match tokio::time::timeout(CHECK_TIMEOUT, fetch_latest_tag_inner()).await {

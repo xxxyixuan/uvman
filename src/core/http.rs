@@ -11,11 +11,11 @@ use tokio::time::sleep;
 use crate::core::error::UError;
 use crate::{Lazy, core};
 
-/// 未配置 `[network] timeout` 时的默认超时（秒）
+/// Default timeout (s) when `[network] timeout` is not set
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
 
 pub static HTTP_CLIENT: Lazy<HttpClient> = Lazy::new(|| {
-    // 超时跟随全局配置（[network] timeout），缺省 30 秒
+    // Timeout follows global config ([network] timeout), defaulting to 30s
     let timeout = crate::core::config::GLOBAL_CONFIG
         .network
         .timeout
@@ -33,7 +33,7 @@ impl HttpClient {
         Self::with_proxy(timeout, None)
     }
 
-    /// 创建 HTTP 客户端；显式指定的 proxy 优先，否则回退到全局配置中的代理
+    /// Build an HTTP client; an explicit proxy wins, else falls back to the global config proxy
     pub fn with_proxy(
         timeout: u64, proxy: Option<&str>,
     ) -> Result<Self, UError> {
@@ -42,7 +42,7 @@ impl HttpClient {
             .timeout(Duration::from_secs(timeout))
             .user_agent(user_agent);
 
-        // 显式指定的 proxy 优先，否则回退到全局配置中的代理
+        // Explicit proxy wins, else fall back to the global config proxy
         let proxy_url: Option<String> = match proxy {
             Some(p) => Some(p.to_string()),
             None => config_proxy().map(str::to_string),
@@ -60,7 +60,7 @@ impl HttpClient {
         Ok(Self { client })
     }
 
-    #[allow(dead_code)] // 预留：由 URL 推断文件名下载到目录
+    #[allow(dead_code)] // reserved: infer filename from URL and download into a directory
     pub async fn download(
         &self, url: &str, dest_dir: &str, retries: u64, retry_delay: u64,
     ) -> Result<PathBuf, UError> {
@@ -75,7 +75,7 @@ impl HttpClient {
         self.download_to(url, &dest_path, retries, retry_delay).await
     }
 
-    /// 下载到指定目标路径（带重试与原子写入）
+    /// Download to a target path (with retries and atomic write)
     pub async fn download_to(
         &self, url: &str, dest_path: &Path, retries: u64, retry_delay: u64,
     ) -> Result<PathBuf, UError> {
@@ -106,7 +106,7 @@ impl HttpClient {
         let result = self
             .try_download_to_temp(url, dest_path, &temp_path)
             .await;
-        // 失败清理半成品 .tmp，避免缓存目录残留垃圾
+        // Clean up the partial .tmp on failure to avoid leftover garbage in cache
         if result.is_err() {
             let _ = tokio::fs::remove_file(&temp_path).await;
         }
@@ -128,8 +128,7 @@ impl HttpClient {
             });
         }
 
-        // 下载进度条：已知 Content-Length 用进度条，未知用 spinner；
-        // quiet 模式下不显示
+        // Progress bar when Content-Length is known, spinner otherwise; hidden in quiet mode
         let progress = if crate::ui::report::quiet() {
             None
         } else {
@@ -161,7 +160,7 @@ impl HttpClient {
             })?;
         }
         if let Some(pb) = &progress {
-            // 保留满条显示（不清除），与安装/完成消息衔接
+            // Keep the full bar visible (not cleared) so it flows into the install/done message
             pb.finish();
         }
 
@@ -193,7 +192,7 @@ impl HttpClient {
         Ok(response)
     }
 
-    /// 以文本形式获取 URL 内容（带重试），适用于小体积文本（插件 TOML、模板等）
+    /// Fetch URL content as text (with retries) for small payloads (plugin TOML, templates)
     pub async fn fetch_text(
         &self, url: &str, retries: u64, retry_delay: u64,
     ) -> Result<String, UError> {
@@ -221,19 +220,19 @@ impl HttpClient {
     }
 }
 
-/// 读取全局配置中的代理地址（plugin.proxy 优先，其次 network.proxy）
+/// Read the proxy address from global config (plugin.proxy first, then network.proxy)
 fn config_proxy() -> Option<&'static str> {
     let config = &crate::core::config::GLOBAL_CONFIG;
     config.plugin.proxy.as_deref().or_else(|| config.network.proxy.as_deref())
 }
 
-/// 下载半成品的临时文件路径（与目标同目录，前缀 `.tmp_` + 进程号）
+/// Temp path for a half-downloaded file (same dir as target, prefixed .tmp_ + pid)
 fn tmp_sibling(dest_path: &Path) -> PathBuf {
     let temp_dir = dest_path.parent().unwrap_or(Path::new("."));
     temp_dir.join(format!(".tmp_{}", std::process::id()))
 }
 
-/// 构造下载进度指示：已知总大小时用进度条，否则用 spinner
+/// Build download progress: a progress bar when total is known, else a spinner
 fn new_progress(filename: &str, total: Option<u64>) -> ProgressBar {
     match total {
         Some(len) => {
@@ -268,7 +267,7 @@ mod tests {
 
     use super::*;
 
-    /// 测试用客户端不继承全局配置中的代理，避免 localhost mock 请求被代理转发
+    /// Test client does not inherit the global proxy so localhost mock requests stay local
     fn create_client() -> HttpClient {
         let client = Client::builder()
             .timeout(Duration::from_secs(30))
@@ -335,7 +334,7 @@ mod tests {
         Mock::given(method("GET"))
             .and(path("/alwaysfail"))
             .respond_with(ResponseTemplate::new(500))
-            .expect(3) // 最多匹配 3 次
+            .expect(3) // expect at most 3 hits
             .mount(&mock_server)
             .await;
 

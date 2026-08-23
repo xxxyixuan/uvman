@@ -2,143 +2,143 @@ use std::path::PathBuf;
 
 use thiserror::Error;
 
-/// 修复建议：一句说明 + 若干可整行复制的命令。
+/// Fix suggestion: a one-line message plus commands copyable whole-line.
 ///
-/// 设计参考 uv 的 `hint:` 与 mise 的提示格式：
-/// 命令独立成行输出（缩进两空格、绿色高亮），方便用户直接选中复制。
+/// Mirrors uv's `hint:` and mise's prompt format:
+/// commands are printed one per line (two-space indent, green highlight) for direct select-copy.
 pub struct Hint {
-    /// 一句话说明（可含反引号标记的片段）
+    /// One-line explanation (may contain backtick-marked fragments)
     pub message: String,
-    /// 可整行复制的命令，每行渲染一个
+    /// Commands copyable whole-line, rendered one per line
     pub commands: Vec<String>,
 }
 
-/// uvman 领域错误。
+/// uvman domain error.
 ///
-/// `Display` 输出面向用户的消息；`hint()` 返回可选的修复建议；
-/// `exit_code()` 区分用法错误（2）与一般错误（1），与 uv 惯例一致。
+/// `Display` outputs user-facing messages; `hint()` returns an optional fix;
+/// `exit_code()` distinguishes usage errors (2) from general errors (1), matching uv.
 #[derive(Error, Debug)]
 pub enum UError {
-    /// 插件已存在（可 --force 覆盖）
+    /// Plugin already exists (overwrite with --force)
     #[error("plugin '{name}' already exists")]
     PluginAlreadyExists { name: String },
 
-    /// 插件未安装；similar 携带拼写相近的已安装插件名（did you mean）
+    /// Plugin not installed; similar holds near-miss installed names (did you mean)
     #[error("plugin '{name}' is not installed")]
     PluginNotInstalled { name: String, similar: Vec<String> },
 
-    /// 升级源的插件版本低于当前已安装版本（阻止静默降级）
+    /// Source version is older than the installed one (prevents silent downgrade)
     #[error(
         "plugin '{name}' is already at {current}; source version {remote} is older"
     )]
     PluginDowngrade { name: String, current: String, remote: String },
 
-    /// 未指定要操作的插件
+    /// No plugin specified to operate on
     #[error("no plugin specified to upgrade")]
     MissingPluginTarget,
 
-    /// 无效的 GitHub 仓库 URL
+    /// Invalid GitHub repository URL
     #[error("'{url}' is not a valid GitHub repository URL")]
     InvalidGitHubUrl { url: String },
 
-    /// 无效 URL
+    /// Invalid URL
     #[error("'{url}' is not a valid URL")]
-    #[allow(dead_code)] // 预留：通用 URL 校验错误
+    #[allow(dead_code)] // reserved: generic URL validation error
     InvalidUrl { url: String },
 
-    /// 插件名非法
+    /// Invalid plugin name
     #[error(
         "invalid plugin name '{name}': only letters, digits, '_' and '-' are allowed"
     )]
     InvalidPluginName { name: String },
 
-    /// 路径不存在
+    /// Path does not exist
     #[error("path '{}' does not exist", path.display())]
     PathNotFound { path: PathBuf },
 
-    /// 路径不是文件
+    /// Path is not a file
     #[error("path '{}' is not a file", path.display())]
     NotAFile { path: PathBuf },
 
-    /// 目标文件已存在
+    /// Target file already exists
     #[error("file already exists: {}", path.display())]
     FileExists { path: PathBuf },
 
-    /// 兜底错误
+    /// Fallback error
     #[error("{0}")]
     SimpleError(String),
 
-    /// 通用IO错误
+    /// Generic IO error
     #[error("IO error: {source}")]
     IoError {
         #[from]
         source: std::io::Error,
     },
 
-    /// 文件操作错误
+    /// File operation error
     #[error("file operation failed on {}: {source}", path.display())]
     FileError { path: PathBuf, source: std::io::Error },
 
-    /// TOML 反序列化错误
+    /// TOML deserialization error
     #[error("failed to parse {}: {source}", path.display())]
     TomlError { path: PathBuf, source: toml::de::Error },
 
-    /// TOML 序列化错误
+    /// TOML serialization error
     #[error("failed to serialize {}: {source}", path.display())]
     TomlSerializeError { path: PathBuf, source: toml::ser::Error },
 
-    /// JSON 序列化/反序列化错误
+    /// JSON serialize/deserialize error
     #[error("JSON error: {source}")]
     JsonError { source: serde_json::Error },
 
-    /// HTTP 请求失败
+    /// HTTP request failed
     #[error("failed to reach {url}: {source}")]
     NetworkError { url: String, source: reqwest::Error },
 
-    /// 代理配置错误
+    /// Invalid proxy configuration
     #[error("invalid proxy URL '{url}': {source}")]
     ProxyError { url: String, source: reqwest::Error },
 
-    /// HTTP 响应状态码错误
+    /// HTTP response status error
     ///
-    /// 不向用户暴露内部下载 URL（如 raw.githubusercontent.com 的完整地址），
-    /// 那对自助排查无益；具体地址在 `--verbose` 的详细报告中可见。
+    /// Do not expose internal download URLs (e.g. the full raw.githubusercontent.com
+    /// address); it does not help self-diagnosis. The exact URL is visible in `--verbose`.
     #[error("the remote server returned HTTP {status}")]
     HttpStatusError { url: String, status: u16 },
 
-    /// 文件校验和错误
+    /// File checksum error
     #[error("checksum mismatch: {message}")]
     ChecksumError { message: String },
 
-    /// 压缩包解压失败（tar/zip/gzip/xz）
+    /// Archive extraction failed (tar/zip/gzip/xz)
     #[error("failed to extract {}: {source}", path.display())]
     ExtractError {
         path: PathBuf,
         source: Box<dyn std::error::Error + Send + Sync>,
     },
 
-    /// 源码编译失败
+    /// Source build failed
     #[error("build failed: {message}")]
-    #[allow(dead_code)] // 预留：源码构建错误
+    #[allow(dead_code)] // reserved: source build error
     BuildError { message: String },
 
-    /// 当前平台无匹配的安装方案
+    /// No installation matches the current platform
     #[error("no installation available for {os}-{arch}")]
     PlatformNotSupported { os: String, arch: String },
 
-    /// 请求的版本不存在
+    /// Requested version not found
     #[error("version {version} not found for {tool}")]
     VersionNotFound { tool: String, version: String },
 
-    /// 目标版本已安装（不 `--force` 时阻止重复安装）
+    /// Target version already installed (blocks reinstall without --force)
     #[error("{tool}@{version} is already installed")]
     AlreadyInstalled { tool: String, version: String },
 }
 
 impl UError {
-    /// 修复建议：一句说明 + 可整行复制的命令。
+    /// Fix suggestion: a one-line message plus whole-line-copyable commands.
     ///
-    /// 仅在用户无法从错误本身推断下一步时给出（uv 的 hint 设计原则）。
+    /// Only given when the error alone cannot suggest the next step (uv's hint principle).
     pub fn hint(&self) -> Option<Hint> {
         let hint = match self {
             Self::PluginAlreadyExists { name } => Hint {
@@ -203,7 +203,7 @@ impl UError {
                 message: "to reinstall and overwrite the existing files, run:".into(),
                 commands: vec![format!("uvman install {tool}@{version} --force")],
             },
-            // 网络层失败统一提示代理配置（GitHub 相关域名在部分网络需代理访问）
+            // Any network failure points to proxy config (GitHub domains need it on some networks)
             Self::NetworkError { .. } | Self::ProxyError { .. } => Hint {
                 message: "check your network, or sync the index through a proxy:".into(),
                 commands: vec!["uvman plugin sync --proxy <proxy-url>".into()],
@@ -246,7 +246,7 @@ impl UError {
         Some(hint)
     }
 
-    /// 进程退出码：用法/输入错误为 2（与 uv、clap 惯例一致），其余为 1
+    /// Process exit code: usage/input errors are 2 (matching uv, clap), others 1
     pub fn exit_code(&self) -> u8 {
         match self {
             Self::MissingPluginTarget
@@ -259,7 +259,7 @@ impl UError {
         }
     }
 
-    /// 是否为携带底层 source 的系统级错误（用于决定是否显示 --verbose footer）
+    /// Whether this error carries an underlying source (decides showing the --verbose footer)
     pub fn has_source(&self) -> bool {
         matches!(
             self,

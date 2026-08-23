@@ -1,8 +1,8 @@
-//! "did you mean" 相似度建议（参考 mise/uv 的拼写纠错设计）。
+//! "did you mean" similarity suggestions (spell-correction design from mise/uv).
 
-/// Damerau-Levenshtein 距离（OSA 变体，支持相邻字符转置，大小写不敏感）。
+/// Damerau-Levenshtein distance (OSA variant; supports adjacent transpositions, case-insensitive).
 ///
-/// 相比标准 Levenshtein，额外识别 "mkae"→"make" 这类高频转置拼写错误。
+/// Unlike plain Levenshtein, recognizes frequent transposition typos like "mkae"→"make".
 fn damerau_levenshtein(a: &str, b: &str) -> usize {
     let a: Vec<char> = a.to_lowercase().chars().collect();
     let b: Vec<char> = b.to_lowercase().chars().collect();
@@ -14,8 +14,8 @@ fn damerau_levenshtein(a: &str, b: &str) -> usize {
         return n;
     }
 
-    // prev2: i-2 行；prev: i-1 行；curr: 当前行。
-    // prev2/prev 均初始化为第 0 行（i>=2 才会读取 prev2）
+    // prev2: row i-2; prev: row i-1; curr: current row.
+    // prev2/prev are both initialized to row 0 (prev2 is read only when i>=2)
     let mut prev2: Vec<usize> = (0..=m).collect();
     let mut prev: Vec<usize> = (0..=m).collect();
     let mut curr = vec![0usize; m + 1];
@@ -25,7 +25,7 @@ fn damerau_levenshtein(a: &str, b: &str) -> usize {
             let cost = usize::from(a[i - 1] != b[j - 1]);
             curr[j] =
                 (prev[j] + 1).min(curr[j - 1] + 1).min(prev[j - 1] + cost);
-            // 相邻转置：a[i-2..i] 与 b[j-2..j] 互为反转
+            // adjacent transposition: a[i-2..i] is the reverse of b[j-2..j]
             if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
                 curr[j] = curr[j].min(prev2[j - 2] + 1);
             }
@@ -36,11 +36,11 @@ fn damerau_levenshtein(a: &str, b: &str) -> usize {
     prev[m]
 }
 
-/// 从候选中找出与输入最相似的名称，按距离升序返回至多 3 个。
+/// Find names in candidates most similar to input, returning up to 3 ascending by distance.
 ///
-/// 距离阈值为 `max(1, len/3)`：过短输入（如 "no"）只允许 1 处差异，
-/// 避免给出离谱的建议。编辑距离无命中时回退到首段前缀匹配
-/// （如 "no-such" → 以 "no" 开头的 "node"），覆盖连字符类拼写偏差。
+/// Threshold is `max(1, len/3)`: very short input (e.g. "no") allows only 1 edit,
+/// avoiding absurd suggestions. When no edit-distance hit, fall back to first-segment prefix
+/// match (e.g. "no-such" → "node") to cover hyphenated spelling drift.
 pub fn did_you_mean(input: &str, candidates: &[String]) -> Vec<String> {
     let threshold = (input.len() / 3).max(1);
     let mut scored: Vec<(usize, String)> = candidates
@@ -54,7 +54,7 @@ pub fn did_you_mean(input: &str, candidates: &[String]) -> Vec<String> {
         return scored.into_iter().map(|(_, c)| c).take(3).collect();
     }
 
-    // 回退：取首个连字符段作为前缀（长度 >= 2 才有意义）
+    // Fallback: first hyphen-segment as a prefix (meaningful only if len >= 2)
     let first_token = input.split('-').next().unwrap_or_default();
     if first_token.len() >= 2 {
         let prefix = first_token.to_lowercase();
@@ -98,19 +98,19 @@ mod tests {
 
     #[test]
     fn test_short_input_tight_threshold() {
-        // 输入过短时只允许 1 处差异，避免 "no" 匹配到 "go" 之外的远名
+        // Short input allows only 1 edit to avoid matching distant names
         assert_eq!(did_you_mean("np", &candidates()), vec!["npm"]);
     }
 
     #[test]
     fn test_hyphen_fallback_prefix() {
-        // 编辑距离过远时按首段前缀回退："no-such" → "node"
+        // When edits are too far, fall back to first-segment prefix: "no-such" → "node"
         assert_eq!(did_you_mean("no-such", &candidates()), vec!["node"]);
     }
 
     #[test]
     fn test_hyphen_fallback_no_hit() {
-        // 前缀也无线索时不给建议
+        // No suggestion when the prefix gives no lead
         assert!(did_you_mean("zz-qq", &candidates()).is_empty());
     }
 
@@ -120,7 +120,7 @@ mod tests {
         assert_eq!(damerau_levenshtein("abc", "abc"), 0);
         assert_eq!(damerau_levenshtein("kitten", "sitting"), 3);
         assert_eq!(damerau_levenshtein("NODE", "node"), 0);
-        // 转置算 1 次编辑
+        // transposition counts as one edit
         assert_eq!(damerau_levenshtein("mkae", "make"), 1);
         assert_eq!(damerau_levenshtein("taeh", "teach"), 2);
     }
