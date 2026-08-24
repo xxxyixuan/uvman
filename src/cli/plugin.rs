@@ -54,7 +54,7 @@ pub enum PluginCommand {
 
 impl Plugin {
     pub async fn run(self) -> crate::Result<()> {
-        // 网络错误的代理提示由 UError::hint() 统一提供
+        // Network-error proxy hints are unified in UError::hint()
         match self.command {
             PluginCommand::Install(args) => args.run().await,
             PluginCommand::Uninstall(args) => args.run().await,
@@ -201,8 +201,8 @@ impl ListArgs {
                     index.plugins
                 },
                 Err(e) => {
-                    // 缓存损坏时回退远端获取；警告走 stderr，不污染 --json 的
-                    // stdout
+                    // Fall back to remote on a corrupted cache; warnings go to
+                    // stderr so they never pollute --json on stdout
                     crate::ui::report::print_warning(&format!(
                         "cached plugin index is corrupted ({e}), falling back to remote"
                     ));
@@ -264,11 +264,12 @@ enum UpgradeOutcome {
 }
 
 enum VersionComparison {
-    /// 新版本更高（或版本缺失/非 semver 无法比较，按用户升级意图继续）
+    /// Newer version available (or version missing/non-semver, so follow the
+    /// user's upgrade intent)
     Upgradable,
-    /// 版本相同，已是最新
+    /// Same version, already up to date
     UpToDate { current: String },
-    /// 新版本更低，阻止降级
+    /// New version is lower; reject downgrades
     Downgrade { current: String, remote: String },
 }
 
@@ -324,7 +325,8 @@ impl UpgradeArgs {
         Ok(())
     }
 
-    /// 升级单个插件：先取新版本内容并比较版本，仅更高版本才覆盖。
+    /// Upgrade a single plugin: fetch the new content and compare versions,
+    /// only overwriting when the new version is higher.
     async fn upgrade_one(
         &self, name: &str, do_confirm: bool,
     ) -> Result<UpgradeOutcome, UError> {
@@ -337,7 +339,8 @@ impl UpgradeArgs {
             });
         }
 
-        // 先取新内容（不落盘），保证版本比较失败时不破坏已安装插件
+        // Fetch new content without persisting it, so a failed version comparison
+        // never corrupts the installed plugin
         let new_content = self.fetch_new_content(name).await?;
         let new_plugin = parse_plugin_toml(&new_content, name)?;
         let new_version = new_plugin.tool.version.clone();
@@ -345,8 +348,8 @@ impl UpgradeArgs {
             .ok()
             .and_then(|p| p.tool.version);
 
-        // 版本比较：阻止降级，跳过已最新；版本缺失或非 semver
-        // 时按用户升级意图继续
+        // Version policy: reject downgrades, skip when up to date; continue per the
+        // user's intent when a version is missing or non-semver
         match compare_versions(
             current_version.as_deref(),
             new_version.as_deref(),
@@ -389,7 +392,8 @@ impl UpgradeArgs {
         Ok(UpgradeOutcome::Upgraded)
     }
 
-    /// 从本地路径 / URL / 远端仓库读取新版本插件内容（不落盘）
+    /// Read the new plugin content from a local path / URL / remote repo
+    /// (without persisting it)
     async fn fetch_new_content(&self, name: &str) -> Result<String, UError> {
         if let Some(local_path) = &self.path {
             let src_path = Path::new(local_path);
@@ -442,7 +446,7 @@ pub struct InfoArgs {
 #[derive(Debug, serde::Serialize)]
 struct InfoOutput {
     name: String,
-    /// 仅本地查询时给出（远端查询不涉及安装状态）
+    /// present in local queries only (remote queries don't cover install state)
     #[serde(skip_serializing_if = "Option::is_none")]
     installed: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -609,7 +613,8 @@ fn install_from_local_path(
     let content = fs::read_to_string(local_path).map_err(|source| {
         UError::FileError { path: local_path.to_path_buf(), source }
     })?;
-    // 安装前校验 TOML 合法性，避免覆盖好的插件写入损坏文件
+    // Validate the TOML before installing, so a working plugin is never
+    // overwritten with a broken file
     let _ = parse_plugin_toml(&content, &name_from_target(target_path))?;
     fs::write(target_path, &content).map_err(|source| UError::FileError {
         path: target_path.to_path_buf(),
@@ -626,7 +631,7 @@ async fn install_from_url(url: &str, target_path: &Path) -> Result<(), UError> {
             GLOBAL_CONFIG.network.retry_delay.unwrap_or(0),
         )
         .await?;
-    // 安装前校验 TOML 合法性，避免写入损坏文件
+    // Validate the TOML before installing, avoiding a broken file on disk
     let _ = parse_plugin_toml(&content, &name_from_target(target_path))?;
     fs::write(target_path, &content).map_err(|source| UError::FileError {
         path: target_path.to_path_buf(),
@@ -703,7 +708,7 @@ async fn load_template(name: &str) -> String {
     };
     if let Ok(response) = HTTP_CLIENT.get(&url).await
         && let Ok(text) = response.text().await
-        // 模板必须含 {name} 占位符才能正确生成插件名
+        // Template must contain the {name} placeholder to render the name
         && text.contains("{name}")
     {
         return text.replace("{name}", name);
@@ -723,7 +728,7 @@ fn template_raw_url() -> Result<String, UError> {
 fn embedded_template(name: &str) -> String {
     format!(
         r#"# uvman plugin: {name}
-# 完整字段说明见插件仓库 templates/template.toml
+# see plugins repo templates/template.toml for the full field reference
 
 [tool]
 name = "{name}"
@@ -739,8 +744,8 @@ default = "https://download-base-url"
 [release]
 source = "api"   # api | static
 url = "https://api.example.com/releases"
-# version_path = "json.path.to.version"   # source = "api" 时版本在响应中的取值路径
-# version_pattern = "v(?P<version>.*)"    # 从 tag/文件名提取版本的正则
+# version_path = "json.path.to.version"   # value path of the version in response for source = "api"
+# version_pattern = "v(?P<version>.*)"    # regex to extract the version from a tag/file name
 # source = "static"
 # versions = ["0.0.1"]
 
@@ -752,7 +757,7 @@ arch_map = {{ x86_64 = "x64", aarch64 = "arm64" }}
 version = "latest"
 mode = "bin"
 
-# ---------- 二进制发行版安装（默认） ----------
+# ---------- binary release install (default) ----------
 [[install.bin]]
 os = ["windows", "linux", "macos"]
 arch = ["x86_64", "aarch64"]
@@ -774,13 +779,13 @@ strip = 1
 
 [install.bin.deploy]
 bin_dir = "bin"
-# 各 OS 发布物布局不同时可用映射形态：
+# mapping form available when release layouts differ per OS:
 # bin_dir = {{ windows = "", linux = "bin", macos = "bin" }}
 # copy_extra = ["LICENSE", "README.md"]
 # [install.bin.deploy.post_install]
 # windows = ["..."]
 
-# ---------- 源码编译安装（按需启用：mode 改为 "src"） ----------
+# ---------- source build install (enable by setting mode = "src") ----------
 # [[install.src]]
 # os = ["windows", "linux", "macos"]
 # arch = ["x86_64", "aarch64"]
@@ -940,8 +945,8 @@ async fn fetch_repository_contents_with_proxy(
         format!("https://api.github.com/repos/{}/{}/contents", owner, repo);
 
     let client = HttpClient::with_proxy(30, proxy)?;
-    // get 内部已校验状态码，失败时返回 NetworkError /
-    // HttpStatusError（保留错误链）
+    // get already validates the status code, mapping failures to
+    // NetworkError / HttpStatusError (preserving the error chain)
     let response = client.get(&api_url).await?;
 
     let items: Vec<serde_json::Value> =
@@ -1009,7 +1014,7 @@ fn is_toml_file(item: &serde_json::Value) -> bool {
     is_file && is_toml
 }
 
-// 插件索引缓存
+// Plugin index cache
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PluginIndex {
     repo: String,
@@ -1099,15 +1104,15 @@ mod tests {
         let tpl = embedded_template("node");
         assert!(tpl.contains("name = \"node\""));
         assert!(tpl.contains("mode = \"bin\""));
-        // 模板占位符已正确转义为字面量 {registry}/{version}
+        // Template placeholders rendered correctly as literals {registry}/{version}
         assert!(tpl.contains("{registry}/node-{version}-{os}-{arch}.{ext}"));
-        // 内置模板必须可被解析为合法插件
+        // The embedded template must parse as a valid plugin
         parse_plugin_toml(&tpl, "node").expect("template must be valid TOML");
     }
 
     #[test]
     fn test_template_raw_url() {
-        // 测试环境 GLOBAL_CONFIG 的 plugin.repo 为默认仓库
+        // In tests GLOBAL_CONFIG.plugin.repo is the default repo
         let url = template_raw_url().unwrap();
         assert_eq!(
             url,
@@ -1140,22 +1145,22 @@ mod tests {
 
     #[test]
     fn test_compare_versions() {
-        // 新版本更高 → 可升级
+        // Newer version → upgradable
         assert!(matches!(
             compare_versions(Some("1.0.0"), Some("1.1.0")),
             VersionComparison::Upgradable
         ));
-        // 版本相同 → 已最新
+        // Same version → already latest
         assert!(matches!(
             compare_versions(Some("1.0.0"), Some("1.0.0")),
             VersionComparison::UpToDate { .. }
         ));
-        // 新版本更低 → 阻止降级
+        // New version is lower → reject downgrade
         assert!(matches!(
             compare_versions(Some("1.1.0"), Some("1.0.0")),
             VersionComparison::Downgrade { .. }
         ));
-        // 任一版本缺失或非 semver → 按升级意图继续
+        // Missing or non-semver version → follow upgrade intent
         assert!(matches!(
             compare_versions(None, Some("1.0.0")),
             VersionComparison::Upgradable
@@ -1184,7 +1189,8 @@ mod tests {
 
     #[test]
     fn test_list_installed_plugin_names_missing_dir() {
-        // 目录不存在时应返回空列表而非报错（升级/列表场景容错）
+        // A missing dir should yield an empty list, not an error (tolerant paths
+        // like upgrade/list)
         assert!(list_installed_plugin_names().is_ok());
     }
 }

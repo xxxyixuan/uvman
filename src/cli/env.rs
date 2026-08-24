@@ -28,11 +28,11 @@ impl Env {
     pub fn run(&self) -> Result<()> {
         let shell = self.shell.unwrap_or_else(Shell::detect);
         let table = current::load();
-        // BTreeMap 按工具名有序，输出确定性
+        // BTreeMap keeps tools name-sorted, so output order is deterministic
         let mut path_entries: Vec<String> = Vec::new();
 
-        // 先清理继承环境中已失效的 UVMAN_* 变量（工具被移除场景）。
-        // 单工具过滤模式是聚焦输出，不越权动其他工具的变量
+        // Clear UVMAN_* vars inherited for tools that are no longer active.
+        // The single-tool filter is a focused view, so leave other tools alone.
         if self.tool.is_none() {
             for key in stale_uvman_vars(&table, std::env::vars()) {
                 println!("{}", shell.unset_var(&key));
@@ -46,7 +46,7 @@ impl Env {
                 continue;
             }
             let home = absolute(tools_dir().join(name).join(&entry.version));
-            // 激活版本被手动删除等场景：跳过失效条目而非报错
+            // Skip missing installs (e.g. an active version deleted manually)
             if !home.is_dir() {
                 continue;
             }
@@ -58,7 +58,7 @@ impl Env {
                 shell.set_var(&format!("UVMAN_{var}_HOME"), &shell.fmt_path(&home))
             );
 
-            // PATH 条目：安装根目录 + bin 子目录（存在时）
+            // PATH entries: install root + bin subdir (when present)
             path_entries.push(shell.fmt_path(&home));
             let bin = home.join("bin");
             if bin.is_dir() {
@@ -74,8 +74,9 @@ impl Env {
     }
 }
 
-/// 找出继承环境中已失效的 UVMAN_* 变量：形如 `UVMAN_<FRAGMENT>_VERSION`
-/// / `UVMAN_<FRAGMENT>_HOME`，但对应工具不在当前状态表内
+/// Find UVMAN_* vars from the inherited environment (keys like
+/// `UVMAN_<FRAGMENT>_VERSION` / `UVMAN_<FRAGMENT>_HOME`) whose tool is no
+/// longer present in the current state table
 fn stale_uvman_vars(
     table: &current::CurrentTools,
     env: impl Iterator<Item = (String, String)>,
@@ -97,8 +98,9 @@ fn stale_uvman_vars(
     stale
 }
 
-/// UVMAN_*_VERSION / UVMAN_*_HOME 形态判断（片段非空且仅 A-Z0-9_）；
-/// 注意 UVMAN_SHELL（激活标记）与裸 UVMAN_HOME 均不符合
+/// Whether a key matches the `UVMAN_*_VERSION` / `UVMAN_*_HOME` shape
+/// (non-empty fragment of only A-Z0-9_); UVMAN_SHELL and bare UVMAN_HOME
+/// deliberately do NOT match
 fn is_uvman_var(key: &str) -> bool {
     let Some(mid) = key
         .strip_prefix("UVMAN_")
@@ -112,8 +114,8 @@ fn is_uvman_var(key: &str) -> bool {
             .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
 }
 
-/// 工具名 → 环境变量名片段：非字母数字转 `_` 并大写
-/// （`node` → `NODE`，`rust-toolchain` → `RUST_TOOLCHAIN`）
+/// Tool name → env-var fragment: non-alphanumeric chars become `_`, then
+/// uppercased (`node` → `NODE`, `rust-toolchain` → `RUST_TOOLCHAIN`)
 pub(crate) fn env_var_fragment(tool: &str) -> String {
     tool.chars()
         .map(|c| {
@@ -154,13 +156,13 @@ mod tests {
         );
 
         let env = vars(&[
-            ("UVMAN_NODE_VERSION", "22.0.0"),   // 在表内：保留
-            ("UVMAN_NODE_HOME", "E:/x"),        // 在表内：保留
-            ("UVMAN_PYTHON_VERSION", "3.12"),   // 工具已移除：清理
-            ("UVMAN_PYTHON_HOME", "E:/y"),      // 工具已移除：清理
-            ("UVMAN_SHELL", "pwsh"),            // 激活标记：不属于工具变量
-            ("UVMAN_HOME", "E:/z"),             // 裸 HOME：片段为空，跳过
-            ("PATH", ";"),                      // 无关变量
+            ("UVMAN_NODE_VERSION", "22.0.0"),   // live: keep
+            ("UVMAN_NODE_HOME", "E:/x"),        // live: keep
+            ("UVMAN_PYTHON_VERSION", "3.12"),   // tool removed: clear
+            ("UVMAN_PYTHON_HOME", "E:/y"),      // tool removed: clear
+            ("UVMAN_SHELL", "pwsh"),            // activation marker, not tool var
+            ("UVMAN_HOME", "E:/z"),             // bare HOME: empty fragment, skip
+            ("PATH", ";"),                      // unrelated
         ]);
         let stale = stale_uvman_vars(&table, env.into_iter());
         assert_eq!(

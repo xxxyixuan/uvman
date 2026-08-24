@@ -25,7 +25,7 @@ impl Install {
 
         let plan = crate::toolset::plan(&tool, version.as_deref()).await?;
 
-        // 已安装且未 --force 时阻止重复安装
+        // Block reinstall when already installed and no --force
         if plan.install_dir.exists() && !self.force {
             return Err(UError::AlreadyInstalled {
                 tool: tool.clone(),
@@ -42,13 +42,13 @@ impl Install {
             ))
         );
 
-        // --force 覆盖：旧目录先改名备份而非直接删除；安装失败时
-        // 回滚，避免"旧的已删、新的没装"导致机器上什么都不剩
+        // --force: rename the old dir to a backup rather than deleting it inline, so
+        // a failed install can roll back instead of leaving nothing behind
         let backup = if plan.install_dir.exists() {
             let mut backup_name = plan.install_dir.clone().into_os_string();
             backup_name.push(".uvman_bak");
             let backup = std::path::PathBuf::from(backup_name);
-            // 上一次失败可能留下残留备份，先清掉
+            // Clear any stale backup left by a previous failed run
             let _ = fs::remove_dir_all(&backup);
             fs::rename(&plan.install_dir, &backup)?;
             Some(backup)
@@ -73,7 +73,7 @@ impl Install {
                 Ok(())
             },
             Err(e) => {
-                // 清理半成品安装目录；有备份则回滚旧版本
+                // Clean up the half-installed dir, restoring the backup on failure
                 let _ = fs::remove_dir_all(&plan.install_dir);
                 if let Some(backup) = &backup
                     && fs::rename(backup, &plan.install_dir).is_err()
@@ -90,12 +90,12 @@ impl Install {
     }
 }
 
-/// 解析 `tool@version` 规范，返回 `(tool, version)`。
+/// Parse a `tool@version` spec into `(tool, version)`.
 ///
-/// - 未指定版本（`node`）时返回 `None`，由插件默认版本决定
-/// - 指定版本可为具体版本号（`20.11.0`）、部分版本（`22`）或代号（`latest`/
-///   `lts`/`nightly`）； 代号到具体版本的解析发生在 `toolset::plan`
-///   阶段（需要插件 release 数据）
+/// - Omitted version (`node`) returns `None`, resolved from the plugin default
+/// - A version may be a full version (`20.11.0`), a partial version (`22`), or
+///   an alias (`latest`/`lts`/`nightly`); aliases are resolved to a concrete
+///   version later in `toolset::plan` (needs the plugin release data)
 pub(crate) fn parse_spec(spec: &str) -> Result<(String, Option<String>), UError> {
     let (tool, version) = match spec.split_once('@') {
         Some((t, v)) => (t, v),
