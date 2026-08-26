@@ -15,9 +15,10 @@ use crate::Result;
 /// GitHub Releases API (uvman is only published to GitHub Releases)
 const RELEASES_API_URL: &str = "https://api.github.com/repos/xxxyixuan/uvman/releases/latest";
 
-/// Short independent timeout for the upgrade check: `uvman version` must never
-/// be blocked by a slow network (the shared client default is far longer).
-const CHECK_TIMEOUT: Duration = Duration::from_secs(30);
+/// Short independent timeout for the upgrade check: it is a best-effort nicety,
+/// so `uvman version` (including `--json` used by scripts) must return promptly
+/// even on a slow/broken network. Failures just suppress the hint.
+const CHECK_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// ASCII banner, printed only on an interactive terminal
 const LOGO: &str = indoc! {r#"
