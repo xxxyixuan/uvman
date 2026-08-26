@@ -1,24 +1,24 @@
-//! 目标 Shell 渲染策略（设计见 .tmp/dev-docs/uvman-env-design.md）。
+//! Target shell rendering strategy (design in .tmp/dev-docs/uvman-env-design.md).
 //!
-//! 职责：把平台无关的键值输出为指定 Shell 可直接求值的语句，
-//! 以及生成 activate 激活脚本（设计见 uvman-activate-design.md）。
-//! 无状态、无 IO；检测（detect）只读环境变量。
+//! Renders platform-neutral key-values into statements each shell can evaluate
+//! directly, and generates the activate script (design in uvman-activate-design.md).
+//! Stateless, no IO; detection (detect) only reads environment variables.
 
 use std::path::Path;
 
-/// `uvman env` 的输出目标 Shell
-// PowerShell 是领域固有名，无法避开 Shell 后缀
+/// Target shell for `uvman env` output
+// "PowerShell" is a domain term; the Shell suffix cannot be avoided
 #[allow(clippy::enum_variant_names)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum Shell {
-    /// bash / Git Bash / 兼容 POSIX sh
+    /// bash / Git Bash / POSIX sh compatible
     #[value(alias = "sh")]
     Bash,
     /// zsh
     Zsh,
     /// fish
     Fish,
-    /// Windows PowerShell（含 pwsh 7+）
+    /// Windows PowerShell (incl. pwsh 7+)
     #[value(name = "pwsh", alias = "powershell")]
     PowerShell,
     /// Windows cmd.exe
@@ -27,10 +27,10 @@ pub enum Shell {
 }
 
 impl Shell {
-    /// 环境推断：显式 --shell 之外的缺省来源。
+    /// Environment inference: the default source aside from explicit --shell.
     ///
-    /// Windows：pwsh 系始终设置 PSModulePath，cmd 不会；
-    /// Unix：$SHELL 取 basename，未知（dash/sh 等）归一 Bash。
+    /// Windows: pwsh-family always sets PSModulePath, cmd does not;
+    /// Unix: $SHELL basename, unknowns (dash/sh etc.) normalize to Bash.
     pub fn detect() -> Shell {
         if cfg!(windows) {
             if std::env::var_os("PSModulePath").is_some() {
@@ -50,8 +50,8 @@ impl Shell {
         }
     }
 
-    /// 渲染单条变量设置（含转义与路径风格处理由调用方决定：
-    /// value 已是最终字符串，路径请先用 fmt_path 转换）
+    /// Render a single variable set (calling code owns escaping and path style:
+    /// value is the final string; convert paths with fmt_path first)
     pub fn set_var(&self, key: &str, value: &str) -> String {
         match self {
             Shell::Bash | Shell::Zsh => {
@@ -64,14 +64,14 @@ impl Shell {
                 format!("$env:{key} = '{}'", value.replace('\'', "''"))
             }
             Shell::Cmd => {
-                // 引号形式避免尾随空格与 & 等特殊字符问题
+                // Quoted form avoids trailing-space and special char (&) issues
                 format!("set \"{key}={value}\"")
             }
         }
     }
 
-    /// 渲染 PATH 前插语句（uvman 条目优先于系统版本）。
-    /// 对已有 PATH 的引用（$PATH 等）由各 Shell 语法自身展开，不参与转义。
+    /// Render a PATH prepend statement (uvman entries take priority over system versions).
+    /// References to existing PATH ($PATH etc.) are expanded by each shell, not escaped here.
     pub fn prepend_path(&self, entries: &[String]) -> String {
         if entries.is_empty() {
             return String::new();
@@ -81,7 +81,7 @@ impl Shell {
                 format!("export PATH=\"{}:$PATH\"", sh_escape(&entries.join(":")))
             }
             Shell::Fish => {
-                // fish 的 PATH 是 list：元素独立引用，空格安全
+                // fish PATH is a list: each element quoted independently, spaces safe
                 let items: Vec<String> =
                     entries.iter().map(|e| sh_quote(e)).collect();
                 format!("set -gx PATH {} $PATH", items.join(" "))
@@ -99,7 +99,7 @@ impl Shell {
         }
     }
 
-    /// `use` 命令成功后的刷新指引（按检测 Shell 给出可复制命令）
+    /// Refresh hint after a successful `use` (copyable commands for the detected shell)
     pub fn inject_hint(&self) -> Vec<String> {
         match self {
             Shell::Bash | Shell::Zsh => {
@@ -108,18 +108,18 @@ impl Shell {
             Shell::Fish => vec!["uvman env | source".to_string()],
             Shell::PowerShell => vec!["uvman env | iex".to_string()],
             Shell::Cmd => {
-                // for /f 逐行执行输出；交互式用 %i（写入 .bat 时才需 %%i）
+                // for /f runs output line-by-line; interactive uses %i (%%i only inside a .bat)
                 vec!["for /f \"delims=\" %i in ('uvman env --shell cmd') do %i"
                     .to_string()]
             }
         }
     }
 
-    /// PATH 列表分隔符
+    /// PATH list separator
     fn path_sep(&self) -> char {
         match self {
             Shell::Bash | Shell::Zsh | Shell::Fish => ':',
-            // pwsh 跨平台存在，跟随宿主 OS
+            // pwsh is cross-platform; follow the host OS
             Shell::PowerShell | Shell::Cmd => {
                 if cfg!(windows) {
                     ';'
@@ -130,8 +130,8 @@ impl Shell {
         }
     }
 
-    /// 路径风格：POSIX 家族恒用 `/`（Git Bash 接受 E:/x 且避免 \ 转义歧义）；
-    /// pwsh/cmd 跟随 OS 原生
+    /// Path style: POSIX family always uses / (Git Bash accepts E:/x and avoids \ ambiguity);
+    /// pwsh/cmd follow the native OS
     pub fn fmt_path(&self, path: &Path) -> String {
         let s = path.to_string_lossy();
         match self {
@@ -140,7 +140,7 @@ impl Shell {
         }
     }
 
-    /// 渲染 unset 语句（清理已失效的 UVMAN_* 变量）
+    /// Render an unset statement (clears stale UVMAN_* vars)
     pub fn unset_var(&self, key: &str) -> String {
         match self {
             Shell::Bash | Shell::Zsh => format!("unset {key}"),
@@ -152,11 +152,11 @@ impl Shell {
         }
     }
 
-    /// 生成 activate 激活脚本（设计见 uvman-activate-design.md 4.x）。
+    /// Generate the activate script (design in uvman-activate-design.md 4.x).
     ///
-    /// 脚本烘焙 state/tools 的绝对路径；结构：烘焙常量 →
-    /// 刷新函数（strip-then-eval）→ prompt 钩子（mtime 快路径）→
-    /// 注册（幂等守卫）→ 激活时立即刷新一次。
+    /// Bakes absolute state/tools paths; structure: baked constants →
+    /// refresh fn (strip-then-eval) → prompt hook (mtime fast path) →
+    /// registration (idempotent guard) → one refresh on activation.
     pub fn activation_script(&self, state: &Path, tools_root: &Path) -> Result<String, String> {
         let render = |tmpl: &str| {
             tmpl.replace("@STATE@", &self.fmt_path(state))
@@ -167,7 +167,7 @@ impl Shell {
             Shell::Zsh => render(ZSH_TMPL),
             Shell::Fish => render(FISH_TMPL),
             Shell::PowerShell => render(PWSH_TMPL),
-            // cmd 无 prompt 钩子点，由 activate 命令层拦截并说明替代方案
+            // cmd has no prompt hook; the activate command layer intercepts and explains alternatives
             Shell::Cmd => {
                 return Err("cmd has no prompt hook".to_string());
             }
@@ -296,7 +296,7 @@ if (-not $global:__uvman_orig_prompt) {
 __uvman_hook
 "#;
 
-/// POSIX 双引号内转义（`\` `"` `` ` `` `$`），保证 eval 时值不被二次展开
+/// POSIX double-quote escaping (\ " $ `), so values are not re-expanded at eval time
 fn sh_escape(value: &str) -> String {
     value
         .replace('\\', "\\\\")
@@ -428,7 +428,7 @@ mod tests {
         assert!(bash.contains("'E:/home/config/tool_current.toml'"), "state baked");
         assert!(bash.contains("'E:/home/tools'"), "tools baked");
         assert!(bash.contains("uvman env --shell bash"));
-        // 幂等守卫：PROMPT_COMMAND 已含钩子时跳过注册
+        // Idempotent guard: skip registration if the hook is already in PROMPT_COMMAND
         assert!(bash.contains("*\";__uvman_hook;\"*)"));
 
         let zsh = Shell::Zsh.activation_script(state, tools).unwrap();
@@ -442,10 +442,10 @@ mod tests {
         let pwsh = Shell::PowerShell.activation_script(state, tools).unwrap();
         assert!(pwsh.contains(r"'E:\home\config\tool_current.toml'"), "native path");
         assert!(pwsh.contains("uvman env --shell pwsh"));
-        // 守卫：不二次包裹原 prompt
+        // Guard: don't wrap the original prompt twice
         assert!(pwsh.contains("if (-not $global:__uvman_orig_prompt)"));
 
-        // cmd 无钩子点，必须报错而非输出脚本
+        // cmd has no hook point; must error rather than output a script
         assert!(Shell::Cmd.activation_script(state, tools).is_err());
     }
 }

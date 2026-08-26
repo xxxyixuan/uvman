@@ -41,7 +41,8 @@ impl Use {
             ),
         }
 
-        // 切换只写状态文件；刷新方式取决于 shell 是否已激活钩子
+        // Switching only updates the state file; the live shell is refreshed by the
+        // activation hook when present
         if std::env::var_os("UVMAN_SHELL").is_some() {
             crate::ui::report::print_hint(
                 "uvman is activated; changes will apply on your next prompt.",
