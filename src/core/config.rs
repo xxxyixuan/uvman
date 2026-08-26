@@ -22,7 +22,7 @@ pub static GLOBAL_CONFIG: Lazy<UvmanConfig> = Lazy::new(|| {
     })
 });
 
-/// 是否为「配置文件不存在」（首次运行，非错误）
+/// Whether the error is a missing config file (first run, not an error)
 fn is_missing_config(err: &UError) -> bool {
     matches!(
         err,
@@ -31,7 +31,7 @@ fn is_missing_config(err: &UError) -> bool {
     )
 }
 
-/// 默认全局配置模板（首次运行生成，用户可自行修改）
+/// Default global config template (generated on first run; user-editable)
 pub const DEFAULT_CONFIG: &str = indoc!(
     r#"
 # UVMAN 全局配置文件
@@ -66,7 +66,7 @@ repo = "https://github.com/xxxyixuan/uvman-plugin"
 "#
 );
 
-/// 生成默认全局配置文件（仅当文件不存在时，不覆盖用户已有配置）
+/// Write the default config file only if it does not exist (never overwrite user config)
 pub fn ensure_default_config() -> Result<(), UError> {
     let path = paths::global_config_path();
     if path.exists() {
@@ -134,7 +134,7 @@ pub struct NetworkConfig {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CacheConfig {
-    /// 下载档案保留时长（小时）；0 表示安装完成后立即删除
+    /// Retain downloaded archives for this many hours; 0 deletes immediately after install
     #[serde(default)]
     pub ttl: Option<u64>,
 }
@@ -145,19 +145,19 @@ mod tests {
 
     #[test]
     fn test_load_default_config() {
-        // 测试环境下 home 为 test/，先自举生成默认配置再加载
+        // In tests, home is test/; bootstrap the default config before loading it
         ensure_default_config().unwrap();
         let config_path = paths::global_config_path();
         assert!(config_path.exists());
         let config = UvmanConfig::load_from(&config_path).unwrap();
-        // 默认配置应给出可解析的插件仓库地址
+        // the default config should expose a parseable plugin repo
         assert!(config.plugin.repo.starts_with("https://"));
         println!("Loaded config: {:#?}", config);
     }
 
     #[test]
     fn test_default_config_is_valid_toml() {
-        // 模板本身必须可被反序列化
+        // the template itself must deserialize
         let config: UvmanConfig = toml::from_str(DEFAULT_CONFIG)
             .expect("default config must be valid TOML");
         assert!(config.plugin.repo.starts_with("https://"));

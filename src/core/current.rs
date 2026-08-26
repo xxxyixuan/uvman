@@ -7,13 +7,13 @@ use serde::{Deserialize, Serialize};
 use crate::core::error::UError;
 use crate::core::paths::tool_current_path;
 
-/// `config/tool_current.toml`：记录每个工具当前使用的版本。
+/// `config/tool_current.toml`: records the currently active version of each tool.
 ///
-/// 职责边界（与设计文档一致）：`use` 命令唯一写入方；
-/// `env` / `list` 只读。读取容错：文件缺失或损坏视为无激活版本。
+/// Responsibility boundary (per design doc): `use` is the sole writer;
+/// `env` / `list` only read. A missing or corrupt file is treated as "no active version".
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct CurrentTools {
-    /// 键为工具名；BTreeMap 保证序列化输出按工具名有序（幂等 diff）
+    /// Keyed by tool name; BTreeMap keeps serialized output ordered (idempotent diff)
     #[serde(flatten)]
     pub tools: BTreeMap<String, CurrentEntry>,
 }
@@ -23,17 +23,17 @@ pub struct CurrentEntry {
     pub version: String,
 }
 
-/// 读取当前激活表（缺省路径）；缺失或损坏返回空表
+/// Load the current-tools table (default path); returns empty on missing/corrupt
 pub fn load() -> CurrentTools {
     load_from(&tool_current_path())
 }
 
-/// 查询某工具当前使用的版本
+/// Query the currently active version of a tool
 pub fn current_version(tool: &str) -> Option<String> {
     load().tools.get(tool).map(|e| e.version.clone())
 }
 
-/// 设置（或切换）某工具的当前版本
+/// Set (or switch) the current version of a tool
 pub fn set_current(tool: &str, version: &str) -> Result<(), UError> {
     set_current_at(&tool_current_path(), tool, version)
 }
@@ -41,7 +41,7 @@ pub fn set_current(tool: &str, version: &str) -> Result<(), UError> {
 pub fn load_from(path: &Path) -> CurrentTools {
     match fs::read_to_string(path) {
         Ok(text) => toml::from_str(&text).unwrap_or_default(),
-        // 读取方容错：缺失或损坏的激活表不应让只读命令失败
+        // Reader tolerance: a missing/corrupt table must not break read-only commands
         Err(_) => CurrentTools::default(),
     }
 }
@@ -93,7 +93,7 @@ mod tests {
             Some("1.23.0")
         );
 
-        // 切换已有条目覆盖旧版本
+        // Switching an existing entry overwrites the old version
         set_current_at(&path, "node", "22.23.2").unwrap();
         assert_eq!(
             load_from(&path).tools.get("node").map(|e| e.version.clone()),
@@ -112,9 +112,9 @@ mod tests {
 
     #[test]
     fn test_load_tolerates_missing_and_corrupt() {
-        // 文件不存在 → 空表
+        // Missing file -> empty table
         assert!(load_from(Path::new("definitely/missing.toml")).tools.is_empty());
-        // 内容损坏 → 空表，不 panic
+        // Corrupt content -> empty table, no panic
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("tool_current.toml");
         fs::write(&path, "not = [valid").unwrap();

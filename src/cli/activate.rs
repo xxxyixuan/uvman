@@ -14,7 +14,7 @@ use crate::core::shell::Shell;
 ///   bash/zsh:  eval "$(uvman activate)"
 ///   fish:      uvman activate | source
 ///   pwsh:      uvman activate | Out-String | Invoke-Expression
-///              （管道逐行喂 iex 会拆散多行函数定义，必须先 Out-String 合并）
+///              (Out-String first, or iex splits multi-line function defs)
 ///
 /// cmd is not supported (no prompt hook): use AutoRun startup injection
 /// or the manual refresh command instead.
@@ -38,7 +38,7 @@ impl Activate {
             .into());
         }
 
-        // 烘焙绝对路径：脚本可能在任意 CWD 下求值
+        // Bake absolute paths: the script may be evaluated from any CWD
         let state = absolute(tool_current_path());
         let tools = absolute(tools_dir());
 

@@ -2,7 +2,8 @@ use crate::core::error::UError;
 use crate::core::paths::tools_dir;
 use crate::ui::style::ogreen;
 
-/// 语义化版本升序比较（最新在最后）；无法解析时回退字符串序
+/// Semantic-version ascending comparison (newest last); falls back to
+/// lexicographic order when a version cannot be parsed
 fn cmp_versions(a: &str, b: &str) -> std::cmp::Ordering {
     match (parse_semver(a), parse_semver(b)) {
         (Some(x), Some(y)) => x.cmp(&y),
@@ -18,7 +19,7 @@ fn parse_semver(s: &str) -> Option<semver::Version> {
 pub struct List {
     pub tool: Option<String>,
 
-    /// 远端版本针对单个工具，必须搭配 TOOL 使用
+    /// Remote listing targets a single tool, so it requires TOOL
     #[clap(short = 'r', long, requires = "tool")]
     pub remote: bool,
 
@@ -38,7 +39,8 @@ impl List {
 }
 
 async fn list_remote(tool: Option<&str>, json: bool) -> Result<(), UError> {
-    // 正常情况下 clap(requires = "tool") 已拦截缺省，此处为防御性兜底
+    // clap(requires = "tool") normally catches a missing tool; this is a
+    // defensive fallback
     let Some(tool) = tool else {
         return Err(UError::SimpleError(
             "remote listing requires a tool name: uvman list <tool> --remote"
@@ -47,7 +49,7 @@ async fn list_remote(tool: Option<&str>, json: bool) -> Result<(), UError> {
     };
 
     let mut versions = crate::toolset::remote_versions(tool).await?;
-    // API 原始顺序通常为新版在前，统一改为升序：最新版本最后输出
+    // The API returns newest-first; re-sort ascending so the latest is last
     versions.sort_by(|a, b| cmp_versions(&a.version, &b.version));
 
     if json {
@@ -59,7 +61,7 @@ async fn list_remote(tool: Option<&str>, json: bool) -> Result<(), UError> {
         println!("{}", ogreen(format!("{tool}:")));
         for v in &versions {
             match &v.lts {
-                // LTS 线代号（如 node 的 Iron/Jod）标注在版本号后
+                // LTS-line codename (e.g. node's Iron/Jod) follows the version
                 Some(codename) => {
                     println!(" - {} (lts: {codename})", v.version)
                 },
@@ -71,7 +73,7 @@ async fn list_remote(tool: Option<&str>, json: bool) -> Result<(), UError> {
 }
 
 fn list_local(tool: Option<&str>, json: bool) -> Result<(), UError> {
-    // 缺省时收集全部已安装工具；否则仅收集指定工具
+    // Collect all installed tools by default; otherwise only the given tool
     let tools = match tool {
         Some(t) => vec![(t.to_string(), collect_versions(t)?)],
         None => collect_tools()?,
@@ -96,7 +98,7 @@ fn list_local(tool: Option<&str>, json: bool) -> Result<(), UError> {
     Ok(())
 }
 
-/// 收集 tools/ 下所有已安装工具及其版本（按工具名排序）
+/// Collect every installed tool and its versions from tools/ (sorted by name)
 fn collect_tools() -> Result<Vec<(String, Vec<String>)>, UError> {
     let mut tools = Vec::new();
     let entries = std::fs::read_dir(tools_dir())
@@ -112,8 +114,9 @@ fn collect_tools() -> Result<Vec<(String, Vec<String>)>, UError> {
     Ok(tools)
 }
 
-/// 收集某工具已安装的版本目录（按名排序）。
-/// 工具未安装（目录不存在）返回空列表，由调用方决定如何呈现
+/// Collect the installed version dirs of a tool (sorted by name).
+/// Returns empty for an uninstalled tool (missing dir); callers decide
+/// how to present it
 fn collect_versions(tool: &str) -> Result<Vec<String>, UError> {
     let mut version = Vec::new();
     let entries = match std::fs::read_dir(tools_dir().join(tool)) {
@@ -140,7 +143,7 @@ mod tests {
 
     #[test]
     fn test_cmp_versions_semver_ascending() {
-        // 语义化版本升序：10.x 大于 9.x（字典序会排错）
+        // Semver ascending: 10.x sorts above 9.x (lexicographic would mis-sort)
         let mut v = vec!["10.0.0", "9.1.0", "9.0.1", "v8.0.0"];
         v.sort_by(|a, b| cmp_versions(a, b));
         assert_eq!(v, vec!["v8.0.0", "9.0.1", "9.1.0", "10.0.0"]);
@@ -148,11 +151,11 @@ mod tests {
 
     #[test]
     fn test_cmp_versions_falls_back_to_string() {
-        // 非 semver 代号回退字符串序，保持稳定
+        // Non-semver aliases fall back to lexicographic order, staying stable
         let mut v = vec!["beta", "alpha"];
         v.sort_by(|a, b| cmp_versions(a, b));
         assert_eq!(v, vec!["alpha", "beta"]);
-        // 混合时非法版本与合法版本间也回退字符串序，不 panic
+        // Mixed valid/invalid still fall back to lexicographic, no panic
         assert_eq!(cmp_versions("1.0.0", "alpha"), "1.0.0".cmp("alpha"));
     }
 }

@@ -7,8 +7,8 @@ pub(crate) fn init() -> Result<()> {
     color_eyre::install()?;
 
     // Bootstrap: ensure UVMAN_HOME directory layout and default config exist.
-    // 创建失败仅告警不阻断，保证只读命令（version/help 等）在只读环境仍可用；
-    // 写操作命令自身会对目标目录二次校验并报错。
+    // Failures only warn (non-blocking) so read-only commands stay usable in
+    // constrained environments; write commands re-validate the target dirs.
     if let Err(e) = paths::ensure_layout() {
         crate::ui::report::print_warning(&format!(
             "failed to create UVMAN_HOME directory layout: {e}"

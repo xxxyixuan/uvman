@@ -32,8 +32,8 @@ impl ToolPlugin {
         })
     }
 
-    /// 将系统 OS/ARCH 常量经 platform.os_map / arch_map 映射为下载标识（如
-    /// windows -> win、x86_64 -> x64）
+    /// Map system OS/ARCH constants via platform.os_map / arch_map to download tokens
+    /// (e.g. windows -> win, x86_64 -> x64)
     pub fn resolve_platform(&self) -> Result<(String, String), UError> {
         let sys_os = crate::core::platform::OS.as_str();
         let sys_arch = crate::core::platform::ARCH.as_str();
@@ -62,8 +62,8 @@ impl ToolPlugin {
         Ok((os, arch))
     }
 
-    /// 将链接/路径模板（download.path、hash.path 等）中的 {key}
-    /// 占位符替换为实际值； 未提供的占位符保留原样
+    /// Replace {key} placeholders in link/path templates (download.path, hash.path, etc.)
+    /// with real values; missing ones are left as-is
     pub fn render(&self, template: &str, vars: &HashMap<&str, &str>) -> String {
         let mut result = template.to_string();
         for (key, value) in vars {
@@ -107,16 +107,16 @@ impl Registry {
     }
 }
 
-/// 版本发布源，`source` 字段决定变体（内部标签，TOML 中始终有 `source` 键）：
+/// Version release source; the `source` field selects the variant (internal tag; TOML always has `source`):
 ///
 /// ```toml
-/// [release]                    # api：请求 url 拉取 JSON，
-/// source = "api"               # 经 version_path 定位、version_pattern 清洗
+/// [release]                    # api: fetch JSON from url,
+/// source = "api"               # locate via version_path, clean via version_pattern
 /// url = "https://..."
-/// version_path = "data.tags"   # 可选
-/// version_pattern = "..."      # 可选
+/// version_path = "data.tags"   # optional
+/// version_pattern = "..."      # optional
 ///
-/// [release]                    # static：直接使用插件内固定列表
+/// [release]                    # static: use a fixed list in the plugin
 /// source = "static"
 /// versions = ["1.0.0", "1.1.0"]
 /// ```
@@ -198,23 +198,23 @@ pub struct DeployConfig {
     pub post_install: Option<HashMap<String, Vec<String>>>,
 }
 
-/// 平台差异化取值：纯值对所有 OS 生效，或按 OS 显式映射。
+/// Per-OS value: a plain value applies to all OS, or an explicit OS mapping.
 ///
-/// 同一工具族不同 OS 的发布物布局可能不同（如 Node 的 Windows zip
-/// 可执行文件在根目录，linux/macos 的 tar 包在 bin/ 下），
-/// 因此 deploy 字段需要与 ext/post_install 一致的 per-OS 表达能力。
+/// Different OS releases of the same tool may differ in layout (e.g. Node's Windows zip
+/// keeps the binary at the root, linux/macos tarballs under bin/), so deploy fields
+/// need the same per-OS expressiveness as ext/post_install.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
 pub enum PerOs<T> {
-    /// 纯值形态：`bin_dir = "bin/"`，对全部 OS 生效
+    /// Plain form: `bin_dir = "bin/"`, applies to all OS
     All(T),
-    /// 按 OS 映射形态：`bin_dir = { linux = "bin/", windows = "" }`
+    /// Per-OS mapping: `bin_dir = { linux = "bin/", windows = "" }`
     ByOs(HashMap<String, T>),
 }
 
 impl<T> PerOs<T> {
-    /// 解析当前 OS 的取值；ByOs 缺失该 OS 条目时明确报错
-    /// （而非静默回退，避免把布局错误推迟到安装期才暴露）
+    /// Resolve the value for the current OS; ByOs errors clearly if that OS is missing
+    /// (rather than silently falling back, so layout mistakes surface before install)
     pub fn resolve(&self, os: &str) -> Result<&T, UError> {
         match self {
             PerOs::All(v) => Ok(v),
@@ -283,12 +283,12 @@ bin_dir = { linux = "bin/", macos = "bin/", windows = "" }
         .unwrap();
         assert_eq!(cfg.bin_dir.resolve("windows").unwrap(), "");
         assert_eq!(cfg.bin_dir.resolve("linux").unwrap(), "bin/");
-        // 缺失 OS 条目必须报错而非静默回退
+        // A missing OS entry must error, not silently fall back
         assert!(cfg.bin_dir.resolve("freebsd").is_err());
     }
 
-    /// 内联 node 插件样例（与插件仓库 node.toml 同构）。
-    /// 测试自包含夹具，不依赖 test/ 目录下的外部文件
+    /// Inline node plugin sample (isomorphic to node.toml in the plugin repo).
+    /// Self-contained fixture; does not depend on external files under test/
     fn node_plugin_toml() -> &'static str {
         r#"
 [tool]
@@ -343,7 +343,7 @@ bin_dir = { windows = "", linux = "bin", macos = "bin" }
     fn test_load_plugin() {
         let plugin: ToolPlugin = toml::from_str(node_plugin_toml()).unwrap();
         assert_eq!(plugin.tool.name, "node");
-        // 候选源：mirrors 在前、default 兜底
+        // Candidate sources: mirrors first, default as fallback
         let sources = plugin.registry.sources();
         assert_eq!(sources[0], "https://npmmirror.com/mirrors/node");
         assert!(sources.contains(&"https://nodejs.org/dist".to_string()));
@@ -355,7 +355,7 @@ bin_dir = { windows = "", linux = "bin", macos = "bin" }
 
         let (os, arch) = plugin.resolve_platform().unwrap();
         let platform = plugin.platform.as_ref().unwrap();
-        // 映射结果必须与系统常量在 os_map/arch_map 中的目标一致
+        // Mapped result must match the system constants' targets in os_map/arch_map
         assert_eq!(os, platform.os_map[crate::core::platform::OS.as_str()]);
         assert_eq!(
             arch,
@@ -377,7 +377,7 @@ bin_dir = { windows = "", linux = "bin", macos = "bin" }
 
     #[test]
     fn test_release_enum_parsing() {
-        // api 变体：source 作内部标签，其余字段映射到变体成员
+        // api variant: source is the internal tag; remaining fields map to the variant
         let api: Release = toml::from_str(
             r#"
             source = "api"
@@ -395,7 +395,7 @@ bin_dir = { windows = "", linux = "bin", macos = "bin" }
             other => panic!("应解析为 Api 变体，实际 {other:?}"),
         }
 
-        // static 变体：直接使用固定列表
+        // static variant: uses the fixed list directly
         let fixed: Release = toml::from_str(
             r#"
             source = "static"
@@ -413,7 +413,7 @@ bin_dir = { windows = "", linux = "bin", macos = "bin" }
             other => panic!("应解析为 Static 变体，实际 {other:?}"),
         }
 
-        // 未知 source 应报错（原设计静默通过，无法提前暴露插件配置错误）
+        // An unknown source must error (the original design silently passed, hiding config errors)
         assert!(toml::from_str::<Release>(r#"source = "unknown""#).is_err());
     }
 

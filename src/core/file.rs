@@ -24,7 +24,7 @@ mod tests {
         let path = root.join("subdir");
 
         ensure_dir(&path)?;
-        assert!(path.exists() && path.is_dir(), "目录已创建成功");
+        assert!(path.exists() && path.is_dir(), "directory created successfully");
 
         fs::remove_dir_all(&root)?;
         Ok(())
