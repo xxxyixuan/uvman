@@ -18,8 +18,8 @@ fn main() -> std::process::ExitCode {
             let want_debug = std::env::var_os("RUST_BACKTRACE")
                 .is_some_and(|v| v != "0")
                 || ui::report::verbose() > 0;
-            // 默认只输出用户可读信息；--verbose / RUST_BACKTRACE
-            // 时输出详细调试报告
+            // Print user-readable info by default; --verbose / RUST_BACKTRACE
+            // emit the full debug report.
             let code = if want_debug {
                 eprintln!("{report:?}");
                 1
@@ -38,7 +38,7 @@ async fn _main() -> Result<()> {
     let cli = cli::Cli::parse();
     ui::report::set_verbose(cli.verbose);
     ui::report::set_quiet(cli.quiet);
-    // 遵循 NO_COLOR 惯例（https://no-color.org）
+    // Honor the NO_COLOR convention (https://no-color.org)
     if std::env::var_os("NO_COLOR").is_some() {
         ui::report::set_color(false);
     }

@@ -8,7 +8,7 @@ fn user_home() -> PathBuf {
     std::env::var(key).map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("."))
 }
 
-/// 可执行文件所在目录（Windows 便携安装的默认数据根目录）
+/// Directory of the executable (default data root for Windows portable installs)
 #[cfg(windows)]
 fn executable_dir() -> Option<PathBuf> {
     std::env::current_exe()
@@ -16,25 +16,25 @@ fn executable_dir() -> Option<PathBuf> {
         .and_then(|p| p.parent().map(|d| d.to_path_buf()))
 }
 
-/// uvman 数据根目录（tools/plugins/cache/config/logs 的统一父目录）。
+/// uvman data root dir (common parent of tools/plugins/cache/config/logs).
 ///
-/// 平台差异的默认取值：
-/// - **Windows**：默认取可执行文件所在目录（便携式），数据跟随二进制存放，
-///   移到任意位置即可整体迁移；`UVMAN_HOME` 环境变量可覆盖指定其他位置。
-/// - **Linux/macOS**：固定为 `$HOME/.uvman`，不读取 `UVMAN_HOME`，
-///   遵循类 Unix 约定（用户级工具数据独立于可执行文件位置）。
+/// Platform defaults:
+/// - **Windows**: the executable's directory by default (portable); data lives beside
+///   the binary so moving the folder migrates everything. `UVMAN_HOME` overrides.
+/// - **Linux/macOS**: fixed to `$HOME/.uvman`, ignoring `UVMAN_HOME`,
+///   following Unix conventions (user-level tool data independent of the binary).
 pub fn uvman_home() -> PathBuf {
-    // 仅单测（cfg(test) 由 libtest 编译注入）用 test/ 隔离，避免污染用户真实数据。
-    // 严禁扩展到 debug_assertions：debug 二进制会被加入 PATH 当真实工具用，
-    // 相对路径 home 会随 CWD 在任意目录创建 test/（P0 bug）。
-    // 开发期需要隔离数据目录时，设置 UVMAN_HOME 环境变量（仅 Windows 生效）。
+    // Only unit tests (cfg(test)) use test/ to isolate test data from real user data.
+    // Do NOT extend to debug_assertions: a debug binary can be added to PATH as a real
+    // tool, and a relative home would create test/ anywhere the CWD happens to be (P0 bug).
+    // During development, set UVMAN_HOME to isolate the data dir (Windows only).
     if cfg!(test) {
         return PathBuf::from("test");
     }
 
     #[cfg(windows)]
     {
-        // Windows：UVMAN_HOME 优先（便携可覆盖），否则默认二进制目录
+        // Windows: UVMAN_HOME wins (portable override), else the binary dir
         if let Ok(p) = std::env::var("UVMAN_HOME") {
             return PathBuf::from(p);
         }
@@ -43,7 +43,7 @@ pub fn uvman_home() -> PathBuf {
         }
     }
 
-    // Linux/macOS：固定 ~/.uvman，不读取 UVMAN_HOME
+    // Linux/macOS: fixed ~/.uvman, ignore UVMAN_HOME
     user_home().join(".uvman")
 }
 
@@ -63,12 +63,12 @@ pub fn cache_tools_dir() -> PathBuf {
     uvman_home().join("cache").join("tools")
 }
 
-/// 远端已发布版本缓存目录（`list <tool> --remote` 的 api 源缓存）
+/// Cache dir for remote released versions (api source cache for `list <tool> --remote`)
 pub fn cache_versions_dir() -> PathBuf {
     uvman_home().join("cache").join("versions")
 }
 
-#[allow(dead_code)] // 预留：源码构建缓存目录
+#[allow(dead_code)] // reserved: source build cache dir
 pub fn src_build_dir() -> PathBuf {
     uvman_home().join("cache").join("builds")
 }
@@ -97,8 +97,8 @@ pub fn tool_current_path() -> PathBuf {
     config_dir().join("tool_current.toml")
 }
 
-/// 相对路径锚定为绝对路径：注入/烘焙进 shell 脚本的值不应随 CWD 漂移
-/// （UVMAN_HOME 允许配置为相对路径，必须先求值固定）
+/// Anchor a relative path to absolute: values injected/baked into shell scripts
+/// must not drift with CWD (UVMAN_HOME may be relative and must be resolved once)
 pub fn absolute(path: PathBuf) -> PathBuf {
     if path.is_absolute() {
         path
@@ -111,7 +111,7 @@ pub fn layout_dirs() -> Vec<PathBuf> {
     vec![config_dir(), plugins_dir(), tools_dir(), cache_dir(), logs_dir()]
 }
 
-/// 幂等创建 UVMAN_HOME 目录结构；已存在时静默跳过
+/// Idempotently create the UVMAN_HOME layout; silently skip existing dirs
 pub fn ensure_layout() -> Result<(), UError> {
     for dir in layout_dirs() {
         if !dir.exists() {
@@ -130,7 +130,7 @@ mod tests {
 
     #[test]
     fn test_config_path_under_test() {
-        // 测试环境下 uvman_home 默认为 test/
+        // home defaults to test/ in tests
         let path = global_config_path();
         assert!(path.ends_with("test/config/uvman.toml"));
     }
@@ -151,7 +151,7 @@ mod tests {
         for sub in ["config", "plugins", "tools", "cache", "logs"] {
             assert!(names.contains(&sub), "layout must include {sub}");
         }
-        // 全部目录都应位于测试 home（test/）之下
+        // All dirs must live under the test home (test/)
         for dir in &dirs {
             assert!(
                 dir.starts_with("test"),

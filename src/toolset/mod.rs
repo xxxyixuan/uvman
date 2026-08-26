@@ -1,8 +1,8 @@
-//! 工具安装编排层。
+//! Tool installation orchestration layer.
 //!
-//! 职责：把「插件 TOML + 版本请求」解析为一份可执行的 `InstallPlan`，
-//! 再按 下载 → 校验 → 解压 → 部署 的顺序消费该计划。纯数据放在
-//! `InstallPlan` 中，便于逐项测试与复用底层 core 基建。
+//! Resolves "plugin TOML + version request" into an executable `InstallPlan`,
+//! then consumes it in the order download → verify → extract → deploy. Pure
+//! data lives in `InstallPlan` for easy per-stage testing and core reuse.
 
 use std::collections::HashMap;
 use std::ffi::OsStr;
@@ -22,50 +22,49 @@ use crate::core::SingleOrArray;
 use crate::ui::style::{ered, ogreen};
 use crate::core::{paths, platform};
 
-/// 缓存 TTL 默认值：24 小时
+/// Default cache TTL: 24 hours
 const DEFAULT_CACHE_TTL_HOURS: u64 = 24;
 
-/// 工具档案缓存记录文件名（位于 cache/tools/<tool>/ 下）
+/// Tool archive cache record file name (under cache/tools/<tool>/)
 const RECORDS_FILE: &str = "records.json";
 
-/// 一次安装所需的全部原子信息（纯数据，供 execute 逐项消费）。
+/// All atomic information needed for one install (pure data, consumed stepwise by execute).
 ///
-/// 构造阶段（`plan`）不做任何网络 IO：校验和的获取被推迟到执行期，
-/// 保证缓存命中 / 已安装检测等场景可以完全离线判定。
+/// Construction (`plan`) does no network IO: checksum fetching is deferred to
+/// execution, so cache-hit / already-installed checks stay fully offline.
 pub struct InstallPlan {
     pub name: String,
-    /// 已解析为具体版本号（x.y.z），非代号
+    /// Resolved concrete version (x.y.z), not an alias
     pub version: String,
-    /// 候选下载 URL（占位符已替换）：全局镜像 → 插件镜像 → 插件 default，
-    /// 逐个尝试直到成功
+    /// Candidate download URLs (placeholders resolved): global mirror → plugin mirrors → plugin default, tried in order until one succeeds
     pub urls: Vec<String>,
-    /// 平台对应的压缩包扩展名（如 zip / tar.gz）
+    /// Archive extension for the platform (e.g. zip / tar.gz)
     pub ext: String,
-    /// 解压时剥离的顶层目录层数
+    /// Top-level directories to strip on extraction
     pub strip: u32,
-    /// 可执行文件在解压根目录中的相对目录
+    /// Bin directory relative to the extraction root
     pub bin_dir: String,
-    /// 校验和获取计划（URL 已渲染；执行期下载完成后才联网拉取）
+    /// Checksum fetch plan (URLs rendered; fetched over the network only after download at execution)
     pub hash: Option<HashPlan>,
-    /// 下载档案的落盘路径（cache 下）
+    /// Where the downloaded archive is saved (under cache)
     pub archive_path: PathBuf,
-    /// 最终安装目录 (tools/<name>/<version>)
+    /// Final install directory (tools/<name>/<version>)
     pub install_dir: PathBuf,
 }
 
-/// 校验和获取计划：候选 URL + 算法 + 解析规则（纯数据）
+/// Checksum fetch plan: candidate URLs + algorithm + parse rules (pure data)
 pub struct HashPlan {
-    /// 校验和文件的候选 URL（与档案候选源同序）
+    /// Candidate checksum file URLs (same order as archive sources)
     pub urls: Vec<String>,
-    /// 哈希算法（插件缺省 sha256）
+    /// Hash algorithm (defaults to sha256)
     pub algorithm: String,
-    /// 已渲染的提取 pattern
+    /// Rendered extraction pattern
     pub pattern: Option<String>,
-    /// 档案官方文件名（无 pattern 时按行匹配校验和文件）
+    /// Official archive file name (used for line matching when no pattern)
     pub filename: String,
 }
 
-/// 依据插件及版本请求生成安装计划（不执行任何写操作）
+/// Build an install plan from the plugin and version request (performs no writes)
 pub async fn plan(
     name: &str, version: Option<&str>,
 ) -> Result<InstallPlan, UError> {
@@ -95,8 +94,8 @@ pub async fn plan(
     vars.insert("arch", arch.as_str());
     vars.insert("ext", ext.as_str());
 
-    // 候选源：全局 [registry] 镜像（优先）→ 插件镜像 → 插件 default；
-    // 对每个源分别渲染下载 URL
+    // Candidate sources: global [registry] mirror (priority) → plugin mirrors → plugin default;
+    // render a download URL per source
     let sources = merged_sources(name, &plugin);
     let urls: Vec<String> = sources
         .iter()
@@ -106,16 +105,15 @@ pub async fn plan(
         })
         .collect();
 
-    // {filename} 取自下载 URL 的文件名（与官方发布物一致，如
-    // node-v24.19.0-win-x64.zip），而非本地缓存名——校验和文件中的
-    // 行按官方文件名记录
+    // {filename} comes from the URL basename (matches the official artifact),
+    // not the local cache name — checksum files record lines by official name.
     let url_filename = urls
         .first()
         .map(|u| url_basename(u))
         .unwrap_or_default();
     vars.insert("filename", url_filename.as_str());
 
-    // 校验和只构造获取计划（渲染 URL），联网拉取推迟到执行期
+    // Only build the fetch plan (render URLs); defer the network fetch to execution
     let hash = hash_plan(&plugin, bin, &mut vars)?;
 
     let archive_path = paths::cache_tools_dir()
@@ -136,8 +134,8 @@ pub async fn plan(
     })
 }
 
-/// 合成候选下载源：全局 `[registry]`（按工具名，优先级最高）→
-/// 插件 mirrors → 插件 default；重复源只保留先出现者
+/// Merge candidate download sources: global `[registry]` (by tool name, highest
+/// priority) → plugin mirrors → plugin default; keep only the first occurrence of duplicates
 fn merged_sources(name: &str, plugin: &ToolPlugin) -> Vec<String> {
     let mut sources: Vec<String> = Vec::new();
     if let Some(global) = GLOBAL_CONFIG.registry.get(name) {
@@ -156,19 +154,19 @@ fn merged_sources(name: &str, plugin: &ToolPlugin) -> Vec<String> {
     sources
 }
 
-/// 依次执行下载（或复用缓存）、校验、解压、部署。
+/// Run download (or cache reuse), verify, extract, and deploy in sequence.
 ///
-/// 校验策略：下载完成后联网拉取官方校验和校验，并将算法与期望值
-/// 写入 records.json；此后缓存命中走本地校验（离线可用，且能在
-/// 档案被篡改/损坏时自愈重下）。
+/// Verification: after download, fetch the official checksum over the network
+/// and write the algorithm/expected value into records.json; cache hits then use
+/// local verification (offline-capable, and self-heal by re-downloading on tamper/corruption).
 pub async fn execute(plan: &InstallPlan) -> Result<(), UError> {
-    // 惰性 GC：迁移旧布局、清理过期缓存（best-effort，失败不阻断安装）
+    // Lazy GC: migrate legacy layout and clean expired cache (best-effort; failures don't block the install)
     let ttl = cache_ttl();
     gc_cache_at(&paths::cache_dir(), ttl);
 
     let from_cache = archive_cache_hit(plan);
     if from_cache {
-        // 本地校验失败（篡改/损坏）：删除缓存档案，转下载路径自愈
+        // Local verify failed (tampered/corrupted): drop the cached archive and re-download to self-heal
         if verify_recorded_hash(plan).is_err() {
             let _ = fs::remove_file(&plan.archive_path);
             download_and_verify(plan, ttl).await?;
@@ -190,15 +188,16 @@ pub async fn execute(plan: &InstallPlan) -> Result<(), UError> {
 
     install_stages(plan)?;
 
-    // ttl = 0：不保留缓存，安装成功后立即删除压缩包
+    // ttl = 0: keep no cache; delete the archive right after a successful install
     if ttl == 0 {
         let _ = fs::remove_file(&plan.archive_path);
     }
     Ok(())
 }
 
-/// 下载档案并完成远端校验（hash.enabled 时），通过后写入缓存记录。
-/// 期望校验和一并记录，供后续缓存命中做本地校验
+/// Download the archive and, when hash.enabled, verify against the remote
+/// checksum; record the cache entry on success, including the expected value
+/// for later local verification on cache hits.
 async fn download_and_verify(
     plan: &InstallPlan, ttl: u64,
 ) -> Result<(), UError> {
@@ -228,8 +227,8 @@ async fn download_and_verify(
     Ok(())
 }
 
-/// 按候选顺序下载档案（镜像按序 + default 兜底）；
-/// 单个 URL 仍走配置的网络重试，全部候选失败才报错
+/// Download the archive trying candidate URLs in order (mirrors then default);
+/// each URL still uses the configured network retries, erroring only when all fail
 async fn download_archive(plan: &InstallPlan) -> Result<(), UError> {
     let retries = GLOBAL_CONFIG.network.retries.unwrap_or(0);
     let retry_delay = GLOBAL_CONFIG.network.retry_delay.unwrap_or(0);
@@ -254,7 +253,7 @@ async fn download_archive(plan: &InstallPlan) -> Result<(), UError> {
     )))
 }
 
-/// 缓存档案是否可复用：文件存在、非空、且未超过记录的 TTL
+/// Whether the cached archive is reusable: file exists, non-empty, and within the recorded TTL
 fn archive_cache_hit(plan: &InstallPlan) -> bool {
     if !plan.archive_path.is_file()
         || fs::metadata(&plan.archive_path)
@@ -272,7 +271,7 @@ fn archive_cache_hit(plan: &InstallPlan) -> bool {
         return false;
     };
     match load_records(tool_dir).archives.get(name) {
-        // 无记录：视为可复用（孤儿档案由 GC 按 mtime 兜底）
+        // No record: treat as reusable (orphans are handled by GC's mtime fallback)
         None => true,
         Some(record) => {
             record.downloaded_at + record.ttl_hours * 3600 > unix_now()
@@ -280,8 +279,8 @@ fn archive_cache_hit(plan: &InstallPlan) -> bool {
     }
 }
 
-/// 安装三阶段（校验 → 解压 → 部署）；逐阶段 spinner 推进。
-/// 校验阶段为本地校验（records.json 记录值），不产生网络请求
+/// Three install stages (verify → extract → deploy), each advanced by its own spinner.
+/// Verification is local (value recorded in records.json); it makes no network request.
 fn install_stages(plan: &InstallPlan) -> Result<(), UError> {
     let archive_name = plan
         .archive_path
@@ -294,8 +293,8 @@ fn install_stages(plan: &InstallPlan) -> Result<(), UError> {
     })?;
 
     let extract_dir = run_stage("extracting archive".to_string(), || {
-        // 解压到一次性临时目录：TempDir 在 drop 时自动删除，
-        // 成功与失败路径都会清理，且并发安装互不干扰
+        // Extract into a one-shot temp dir: TempDir auto-cleans on drop, covering both
+        // success and failure paths, and concurrent installs don't interfere
         let extract_dir = tempfile::tempdir().map_err(|source| {
             UError::FileError { path: std::env::temp_dir(), source }
         })?;
@@ -318,8 +317,8 @@ fn install_stages(plan: &InstallPlan) -> Result<(), UError> {
     Ok(())
 }
 
-/// 执行单个安装阶段：spinner 展示进行中消息，成功后该行固化为
-/// 绿色 `✔ <msg>`，失败固化为红色 `✖ <msg>` 并向上返回错误
+/// Execute one install stage: a spinner shows an in-progress message; on success
+/// the line is finalized green `✔ <msg>`, on failure red `✖ <msg>` and the error bubbles up
 fn run_stage<T>(
     msg: String, f: impl FnOnce() -> Result<T, UError>,
 ) -> Result<T, UError> {
@@ -343,7 +342,7 @@ fn run_stage<T>(
     }
 }
 
-/// 阶段完成时重绘该行：去掉 spinner、以结果符号着色固化
+/// Redraw the stage line on completion: drop the spinner and colorize by result mark
 fn finish_stage(pb: &ProgressBar, ok: bool, msg: &str) {
     pb.disable_steady_tick();
     pb.set_style(
@@ -361,8 +360,8 @@ fn finish_stage(pb: &ProgressBar, ok: bool, msg: &str) {
     pb.finish();
 }
 
-/// 单阶段 spinner；quiet 模式下不显示。
-/// steady tick 让 spinner 在同步阻塞期间持续转动
+/// Single-stage spinner; hidden in quiet mode.
+/// The steady tick keeps the spinner rotating during synchronous blocking.
 fn stage_spinner() -> Option<ProgressBar> {
     if crate::ui::report::quiet() {
         return None;
@@ -376,28 +375,28 @@ fn stage_spinner() -> Option<ProgressBar> {
     Some(pb)
 }
 
-/// 读取缓存 TTL 配置（小时）；未配置时默认 24 小时
+/// Read the configured cache TTL (hours); defaults to 24 when unset
 fn cache_ttl() -> u64 {
     GLOBAL_CONFIG.cache.ttl.unwrap_or(DEFAULT_CACHE_TTL_HOURS)
 }
 
-/// 单个下载档案的缓存记录
+/// Cache record for a single downloaded archive
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ArchiveRecord {
-    /// 下载完成时间（unix 秒）
+    /// Download completion time (unix seconds)
     downloaded_at: u64,
-    /// 下载时生效的 TTL（小时）
+    /// TTL in effect at download time (hours)
     ttl_hours: u64,
-    /// 下载时校验通过的哈希算法（如 sha256）；未启用校验时无此字段
+    /// Hash algorithm verified at download (e.g. sha256); absent when verification is disabled
     #[serde(default, skip_serializing_if = "Option::is_none")]
     algorithm: Option<String>,
-    /// 下载时校验通过的期望哈希值；未启用校验时无此字段。
-    /// 缓存命中时据此本地校验，防止档案被篡改/损坏
+    /// Expected hash verified at download; absent when verification is disabled.
+    /// Used for local verification on cache hits to guard against tampering/corruption.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     hash: Option<String>,
 }
 
-/// cache/tools/<tool>/records.json 的内容：档案文件名 → 缓存记录
+/// Contents of cache/tools/<tool>/records.json: archive file name → cache record
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct ArchiveRecords {
     #[serde(default)]
@@ -421,7 +420,7 @@ fn save_records(tool_dir: &Path, records: &ArchiveRecords) {
     }
 }
 
-/// 记录（或刷新）一个档案的下载时间、TTL 与校验和
+/// Record (or refresh) an archive's download time, TTL, and checksum
 fn record_archive(
     archive: &Path, ttl_hours: u64, hash: Option<(&str, &str)>,
 ) {
@@ -448,8 +447,8 @@ fn record_archive(
     save_records(tool_dir, &records);
 }
 
-/// 按缓存记录本地校验档案（防篡改/损坏）；
-/// 无记录（孤儿档案）或记录未含校验和时跳过
+/// Verify an archive locally against its cache record (guards tamper/corruption);
+/// skipped when there's no record (orphan) or no stored checksum
 fn verify_recorded_hash(plan: &InstallPlan) -> Result<(), UError> {
     let Some(tool_dir) = plan.archive_path.parent() else {
         return Ok(());
@@ -487,22 +486,22 @@ fn unix_now() -> u64 {
         .unwrap_or(0)
 }
 
-/// cache/ 下不属于「工具下载缓存」的目录（新布局分区/其他缓存），
-/// 不参与旧布局迁移
+/// Directories under cache/ that aren't "tool download cache" (new-layout
+/// partitions / other caches) and so are excluded from legacy layout migration
 const NON_TOOL_CACHE_DIRS: [&str; 3] = ["tools", "versions", "builds"];
 
-/// 惰性清理下载缓存（best-effort）：
-/// - `ttl = 0`：完全不保留缓存，旧布局目录与 `cache/tools/` 下全部清除
-/// - `ttl > 0`：
-///   1. 旧布局 `cache/<tool>/` 的档案迁移到 `cache/tools/<tool>/`（mtime
-///      作为下载时间补记录）， `extract/` 解压残留直接清除
-///   2. 按 records.json 的 `downloaded_at + ttl_hours`
-///      判断过期；无记录的孤儿档案 按 mtime + 当前 TTL 兜底
-/// - cache 根目录下的散落文件（如 plugins.json）不属于下载缓存，不动
+/// Lazily clean the download cache (best-effort):
+/// - `ttl = 0`: keep nothing; clear legacy dirs and the whole `cache/tools/`
+/// - `ttl > 0`:
+///   1. Migrate archives from legacy `cache/<tool>/` to `cache/tools/<tool>/`
+///      (mtime backs the download-time record); drop leftover `extract/` contents
+///   2. Expire by records.json `downloaded_at + ttl_hours`; orphans without a
+///      record fall back to mtime + current TTL
+/// - Loose files at the cache root (e.g. plugins.json) aren't download cache; untouched
 fn gc_cache_at(cache: &Path, ttl: u64) {
     if ttl == 0 {
-        // ttl=0 只清理「工具档案缓存」：旧布局工具目录与 cache/tools/；
-        // versions/builds 等其他缓存分区不动（与迁移路径同一保护规则）
+        // ttl=0 clears only the "tool archive cache": legacy tool dirs and cache/tools/;
+        // other partitions like versions/builds stay untouched (same protection as migration)
         if let Ok(entries) = fs::read_dir(cache) {
             for entry in entries.flatten() {
                 let path = entry.path();
@@ -518,7 +517,7 @@ fn gc_cache_at(cache: &Path, ttl: u64) {
         return;
     }
 
-    // 旧布局迁移
+    // Legacy layout migration
     if let Ok(entries) = fs::read_dir(cache) {
         for entry in entries.flatten() {
             let legacy = entry.path();
@@ -529,7 +528,7 @@ fn gc_cache_at(cache: &Path, ttl: u64) {
         }
     }
 
-    // 新布局按记录清理
+    // New layout: clean by records
     let tools_dir = cache.join("tools");
     if let Ok(entries) = fs::read_dir(&tools_dir) {
         for entry in entries.flatten() {
@@ -541,14 +540,14 @@ fn gc_cache_at(cache: &Path, ttl: u64) {
     }
 }
 
-/// cache 根下的目录是否为非工具缓存目录（tools/versions/builds）
+/// Whether a cache-root dir is a non-tool cache dir (tools/versions/builds)
 fn is_non_tool_cache_dir(entry: &fs::DirEntry) -> bool {
     NON_TOOL_CACHE_DIRS.contains(&entry.file_name().to_string_lossy().as_ref())
 }
 
-/// 将旧布局 cache/<tool>/ 的档案迁移到 cache/tools/<tool>/，完成后移除旧目录
+/// Migrate archives from legacy cache/<tool>/ to cache/tools/<tool>/, then remove the legacy dir
 fn migrate_legacy_tool_dir(cache: &Path, legacy: &Path, default_ttl: u64) {
-    // 历史解压残留直接清除
+    // Drop leftover extraction dirs from the old layout
     let extract = legacy.join("extract");
     if extract.is_dir() {
         let _ = fs::remove_dir_all(&extract);
@@ -571,10 +570,10 @@ fn migrate_legacy_tool_dir(cache: &Path, legacy: &Path, default_ttl: u64) {
             return;
         }
         let to = target.join(entry.file_name());
-        // 目标已存在（重复迁移）时丢弃旧文件，保留新记录
+        // Target exists (repeated migration): drop the old file, keep the newer record
         if to.exists() || fs::rename(&from, &to).is_ok() {
             let _ = fs::remove_file(&from);
-            // 补记录：以 mtime 近似下载时间，按当前 TTL 计算过期
+            // Backfill a record: approximate download time with mtime, expire by current TTL
             let downloaded_at = entry
                 .metadata()
                 .and_then(|m| m.modified())
@@ -589,7 +588,7 @@ fn migrate_legacy_tool_dir(cache: &Path, legacy: &Path, default_ttl: u64) {
                 ArchiveRecord {
                     downloaded_at,
                     ttl_hours: default_ttl,
-                    // 旧布局档案未经过校验和记录，algorithm/hash 缺省
+                    // Legacy archives weren't checksummed; algorithm/hash left default
                     algorithm: None,
                     hash: None,
                 },
@@ -600,12 +599,12 @@ fn migrate_legacy_tool_dir(cache: &Path, legacy: &Path, default_ttl: u64) {
     let _ = fs::remove_dir(legacy);
 }
 
-/// 按记录清理 cache/tools/<tool>/ 下过期的档案，并同步修剪记录
+/// Remove expired archives under cache/tools/<tool>/ by record and prune records
 fn gc_tool_cache(tool_dir: &Path, default_ttl: u64) {
     let mut records = load_records(tool_dir);
     let now = SystemTime::now();
 
-    // 记录驱动：过期或档案已不存在的条目一并移除
+    // Record-driven: drop entries that are expired or whose archive is gone
     let mut changed = false;
     let names: Vec<String> = records.archives.keys().cloned().collect();
     for name in names {
@@ -625,7 +624,7 @@ fn gc_tool_cache(tool_dir: &Path, default_ttl: u64) {
         }
     }
 
-    // 孤儿档案（无记录）：按 mtime + 当前 TTL 兜底
+    // Orphans (no record): fall back to mtime + current TTL
     if let Ok(entries) = fs::read_dir(tool_dir) {
         for entry in entries.flatten() {
             let path = entry.path();
@@ -649,7 +648,7 @@ fn gc_tool_cache(tool_dir: &Path, default_ttl: u64) {
     }
 }
 
-/// 选择与当前系统 os 匹配的 bin 安装条目
+/// Select the bin install entry matching the current OS
 fn select_bin<'a>(
     plugin: &'a ToolPlugin, sys_os: &str,
 ) -> Result<&'a InstallBin, UError> {
@@ -671,28 +670,28 @@ fn select_bin<'a>(
         })
 }
 
-/// 远端版本条目：版本号 + 发布线元数据。
+/// Remote version entry: a version plus release-line metadata.
 ///
-/// latest/lts/stable/nightly 是查询语义而非存储字段：
-/// - `latest` → 全集中 semver 最大者
-/// - `lts` → `lts` 元数据存在的最大者（如 node index.json 的 `"lts": "Iron"`）
-/// - `stable` → semver 无 prerelease（`parse_version` 可判，无需存储）
-/// - `nightly` → prerelease 段自描述（如 `22.0.0-nightly20260101`）
+/// latest/lts/stable/nightly are query semantics, not stored fields:
+/// - `latest` → greatest semver in the whole set
+/// - `lts` → greatest with `lts` metadata (e.g. node index.json `"lts": "Iron"`)
+/// - `stable` → semver without prerelease (decided by `parse_version`; not stored)
+/// - `nightly` → self-described by the prerelease segment (e.g. `22.0.0-nightly20260101`)
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RemoteVersion {
     pub version: String,
-    /// LTS 线代号；None 表示非 LTS（Current / 预发布）
+    /// LTS codename; None means not an LTS (Current / prerelease)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lts: Option<String>,
 }
 
-/// 将版本请求解析为具体版本号（tool_spec 中 `@` 后的部分）：
-/// - `20.11.0`：完整 semver 精准匹配
-/// - `22` / `22.19`：部分版本，匹配 x.y.z / x.y.z' 最新
-/// - `latest`：最新稳定版（等价于该版本本身）
-/// - `lts`：LTS 元数据标记的最新版本
-/// - `nightly`：版本号含 nightly 的最新版
-/// - 缺省：取 `install.defaults.version` 再走上述规则（node 默认 latest）
+/// Resolve a version request (the part after `@` in tool_spec) to a concrete version:
+/// - `20.11.0`: exact match against full semver
+/// - `22` / `22.19`: partial version, newest x.y.z matching the prefix
+/// - `latest`: latest stable (that version itself)
+/// - `lts`: latest with LTS metadata
+/// - `nightly`: latest whose version contains nightly
+/// - default: use `install.defaults.version` then the above rules (node defaults to latest)
 async fn resolve_version(
     plugin: &ToolPlugin, name: &str, version: Option<&str>,
 ) -> Result<String, UError> {
@@ -702,14 +701,14 @@ async fn resolve_version(
         .unwrap_or_else(|| plugin.install.defaults.version.clone());
     let request = request.trim();
 
-    // 具体完整版本直接使用
+    // Exact full version is used as-is
     if semver::Version::parse(request).is_ok() {
         return Ok(request.to_string());
     }
 
     let versions = remote_versions_of(plugin, name).await?;
 
-    // 部分版本（如 22 / 22.19）→ 匹配该前缀的最新版
+    // Partial version (e.g. 22 / 22.19) → latest matching the prefix
     if is_partial_version(request) {
         return resolve_partial(&versions, request).ok_or_else(|| {
             UError::VersionNotFound {
@@ -719,10 +718,10 @@ async fn resolve_version(
         });
     }
 
-    // 代号不回退：无法匹配时明确报错，避免静默装错版本线
+    // Aliases don't fall back: error explicitly on no match, avoiding silently installing the wrong line
     let resolved = match request {
         "latest" => latest_of(&versions),
-        // 元数据优先（api 源），字符串命名约定回退（static 源如 "22.1.0-lts"）
+        // Prefer metadata (api source); fall back to string naming convention (static source, e.g. "22.1.0-lts")
         "lts" => {
             lts_of(&versions).or_else(|| version_matching(&versions, "lts"))
         },
@@ -735,15 +734,15 @@ async fn resolve_version(
     })
 }
 
-/// 将版本请求解析为「本地已安装」的具体版本号（`use` 的数据源）。
+/// Resolve a version request to a concrete "locally installed" version (the `use` source).
 ///
-/// 与 [`resolve_version`]（远端全集）语义对齐，但匹配范围限定在
-/// `tools/<name>/` 下实际存在的版本目录：
-/// - `20.11.0`：精确版本，必须已安装
-/// - `22` / `22.19`：部分版本，匹配已装集合中该前缀的最新
-/// - `latest` / 缺省：已装最新版本
-/// - `lts`：远端元数据筛选已装集合（api 源走版本缓存，static 源回退
-///   字符串命名约定）
+/// Semantics align with [`resolve_version`] (remote set), but matching is limited
+/// to version dirs actually present under `tools/<name>/`:
+/// - `20.11.0`: exact version, must be installed
+/// - `22` / `22.19`: partial, latest installed matching the prefix
+/// - `latest` / default: newest installed
+/// - `lts`: filter the installed set by remote metadata (api source via version cache;
+///   static source falls back to string naming convention)
 pub async fn resolve_installed_version(
     name: &str,
     request: Option<&str>,
@@ -773,7 +772,7 @@ pub async fn resolve_installed_version(
         version: request.to_string(),
     };
 
-    // 完整 semver：必须已安装，缺失即报错（避免静默切换到相近版本）
+    // Full semver: must be installed; error if missing (avoid silently switching to a close version)
     if semver::Version::parse(request).is_ok() {
         return installed
             .iter()
@@ -788,7 +787,7 @@ pub async fn resolve_installed_version(
 
     let resolved = match request {
         "latest" => latest_of(&installed_rv),
-        // 已装集合无本地元数据，借助远端缓存筛选后回退字符串命名
+        // No local metadata for the installed set; filter via remote cache, then fall back to string naming
         "lts" => {
             let remote = remote_versions_of(&plugin, name).await?;
             let lts_installed: Vec<RemoteVersion> = remote
@@ -807,8 +806,8 @@ pub async fn resolve_installed_version(
     resolved.ok_or_else(not_found)
 }
 
-/// 收集某工具本地已安装的版本（目录名，semver 升序）。
-/// 工具目录不存在时返回空表（由调用方决定如何报错）
+/// Collect the locally installed versions of a tool (dir names, semver ascending).
+/// Returns an empty list when the tool dir is missing (caller decides how to error)
 pub fn installed_versions(name: &str) -> Vec<String> {
     installed_versions_in(&paths::tools_dir().join(name))
 }
@@ -824,7 +823,7 @@ fn installed_versions_in(dir: &Path) -> Vec<String> {
                 versions.push(name.to_string());
             }
     }
-    // semver 升序（最新在最后），无法解析时回退字符串序
+    // semver ascending (newest last); fall back to string order when unparseable
     versions.sort_by(|a, b| match (parse_version(a), parse_version(b)) {
         (Some(x), Some(y)) => x.cmp(&y),
         _ => a.cmp(b),
@@ -832,17 +831,17 @@ fn installed_versions_in(dir: &Path) -> Vec<String> {
     versions
 }
 
-/// 是否为形如 `22` / `22.0` 的部分版本（仅数字与点）
+/// Whether this is a partial version like `22` / `22.0` (only digits and dots)
 fn is_partial_version(s: &str) -> bool {
     !s.is_empty() && s.chars().all(|c| c.is_ascii_digit() || c == '.')
 }
 
-/// 在版本条目中解析具体版本号（必为 x.y.z），失败返回 None
+/// Parse a concrete version (must be x.y.z); None on failure
 fn parse_version(s: &str) -> Option<semver::Version> {
     semver::Version::parse(s.trim_start_matches(['v', 'V'])).ok()
 }
 
-/// 取语义化版本最新；无合法版本时回退到列表中最后一个
+/// Latest by semver; falls back to the last item when none parse
 fn latest_of(versions: &[RemoteVersion]) -> Option<String> {
     let mut with_ver: Vec<(&RemoteVersion, semver::Version)> = versions
         .iter()
@@ -855,14 +854,14 @@ fn latest_of(versions: &[RemoteVersion]) -> Option<String> {
         .or_else(|| versions.last().map(|v| v.version.clone()))
 }
 
-/// 取 LTS 元数据存在的最新版本；无则 None
+/// Newest version with LTS metadata; None if none
 fn lts_of(versions: &[RemoteVersion]) -> Option<String> {
     let matched: Vec<RemoteVersion> =
         versions.iter().filter(|v| v.lts.is_some()).cloned().collect();
     if matched.is_empty() { None } else { latest_of(&matched) }
 }
 
-/// 取版本号包含指定关键字的条目中最新者；无则 None
+/// Newest entry whose version contains the keyword; None if none
 fn version_matching(
     versions: &[RemoteVersion], keyword: &str,
 ) -> Option<String> {
@@ -874,9 +873,9 @@ fn version_matching(
     if matched.is_empty() { None } else { latest_of(&matched) }
 }
 
-/// 匹配部分版本前缀（22 / 22.19）的最新完整版本。
-/// 第三条件仅允许「请求在版本之后继续下一段」（如请求 2.0 匹配
-/// 版本 2），防止请求 22 误匹配版本 2
+/// Newest full version matching a partial prefix (22 / 22.19).
+/// The third condition only allows the request to continue past the version
+/// (e.g. request 2.0 matches version 2), preventing request 22 from matching version 2
 fn resolve_partial(versions: &[RemoteVersion], prefix: &str) -> Option<String> {
     let matched: Vec<RemoteVersion> = versions
         .iter()
@@ -890,7 +889,7 @@ fn resolve_partial(versions: &[RemoteVersion], prefix: &str) -> Option<String> {
     if matched.is_empty() { None } else { latest_of(&matched) }
 }
 
-/// 请求 api 源并解析版本条目（version_path 定位 + 元数据保留 + pattern 清洗）
+/// Call the api source and parse version entries (version_path locate + metadata preserve + pattern clean)
 async fn fetch_api_versions(
     url: &str, version_path: Option<&str>, version_pattern: Option<&str>,
 ) -> Result<Vec<RemoteVersion>, UError> {
@@ -902,13 +901,13 @@ async fn fetch_api_versions(
     Ok(apply_version_pattern(raw, version_pattern))
 }
 
-/// 获取工具的远端已发布版本列表（install 解析与 `uvman list <tool> --remote`
-/// 的统一数据源）。
+/// Fetch a tool's published remote versions (single source for install resolution
+/// and `uvman list <tool> --remote`).
 ///
-/// - `static` 源：直接返回插件定义的固定列表，本地数据无需缓存
-/// - `api` 源：优先读 `cache/versions/` 中未过期的缓存；缺失或过期时
-///   联网拉取并写回缓存。缓存文件名携带过期时间（unix 秒，16 进制）：
-///   `{tool}_remote_version_{expires_at}.json`
+/// - `static` source: return the fixed list defined by the plugin; no local caching
+/// - `api` source: read a non-expired cache in `cache/versions/` first; fetch over
+///   the network and write back when missing or expired. The cache file name embeds
+///   its expiry (unix seconds, hex): `{tool}_remote_version_{expires_at}.json`
 pub async fn remote_versions(name: &str) -> Result<Vec<RemoteVersion>, UError> {
     let plugin =
         ToolPlugin::load_from(&paths::plugin_path(name)).map_err(|_| {
@@ -920,7 +919,7 @@ pub async fn remote_versions(name: &str) -> Result<Vec<RemoteVersion>, UError> {
     remote_versions_of(&plugin, name).await
 }
 
-/// 基于已加载插件获取远端版本（install 流程复用，避免二次读插件）
+/// Fetch remote versions from an already-loaded plugin (reused by install to avoid a second plugin read)
 async fn remote_versions_of(
     plugin: &ToolPlugin, name: &str,
 ) -> Result<Vec<RemoteVersion>, UError> {
@@ -946,7 +945,7 @@ async fn remote_versions_of(
     }
 }
 
-/// 从已安装插件中取拼写相近的名称（did-you-mean 建议）
+/// Collect similarly-spelled names from installed plugins (did-you-mean suggestions)
 fn did_you_mean_installed(name: &str) -> Vec<String> {
     let installed: Vec<String> = std::fs::read_dir(paths::plugins_dir())
         .map(|entries| {
@@ -968,12 +967,12 @@ fn did_you_mean_installed(name: &str) -> Vec<String> {
     did_you_mean(name, &installed)
 }
 
-/// 远端版本缓存文件名：`{tool}_remote_version_{过期时间 16 进制}.json`
+/// Remote-version cache file name: `{tool}_remote_version_{expiry-hex}.json`
 fn version_cache_file(tool: &str, expires_at: u64) -> String {
     format!("{tool}_remote_version_{expires_at:x}.json")
 }
 
-/// 从缓存文件名解析过期时间；非本工具缓存或命名非法时返回 None
+/// Parse the expiry from a cache file name; None when not this tool's cache or malformed
 fn parse_cache_expiry(tool: &str, file_name: &str) -> Option<u64> {
     let hex = file_name
         .strip_suffix(".json")?
@@ -981,8 +980,9 @@ fn parse_cache_expiry(tool: &str, file_name: &str) -> Option<u64> {
     u64::from_str_radix(hex, 16).ok()
 }
 
-/// 读取未过期的远端版本缓存；顺手清理该工具已过期的缓存文件。
-/// 旧版纯字符串数组缓存反序列化失败 → 视为无缓存，重新拉取后自然升级
+/// Read a non-expired remote-version cache; opportunistically clean this tool's
+/// expired cache files. Legacy plain-string-array caches fail to deserialize and
+/// are treated as no cache, upgrading naturally on the next fetch.
 fn load_cached_versions(dir: &Path, tool: &str) -> Option<Vec<RemoteVersion>> {
     let mut best: Option<(u64, PathBuf)> = None;
     for entry in fs::read_dir(dir).ok()?.flatten() {
@@ -1002,10 +1002,10 @@ fn load_cached_versions(dir: &Path, tool: &str) -> Option<Vec<RemoteVersion>> {
     serde_json::from_str(&fs::read_to_string(path).ok()?).ok()
 }
 
-/// 写入远端版本缓存（best-effort，失败不影响查询结果）。
+/// Write the remote-version cache (best-effort; failures don't affect query results).
 ///
-/// 过期时间 = 当前时间 + TTL（来自 `cache.ttl`，默认 24 小时），
-/// 以 16 进制编入文件名；`ttl = 0` 表示不保留缓存
+/// Expiry = now + TTL (from `cache.ttl`, default 24h), encoded as hex in the file
+/// name; `ttl = 0` means no caching.
 fn save_cached_versions(dir: &Path, tool: &str, versions: &[RemoteVersion]) {
     let ttl = cache_ttl();
     if ttl == 0 {
@@ -1014,7 +1014,7 @@ fn save_cached_versions(dir: &Path, tool: &str, versions: &[RemoteVersion]) {
     if fs::create_dir_all(dir).is_err() {
         return;
     }
-    // 覆盖式写入：先清理同工具旧缓存，避免多份文件累积
+    // Overwrite: clean this tool's old caches first to avoid accumulating files
     if let Ok(entries) = fs::read_dir(dir) {
         for entry in entries.flatten() {
             let file_name = entry.file_name().to_string_lossy().into_owned();
@@ -1030,7 +1030,7 @@ fn save_cached_versions(dir: &Path, tool: &str, versions: &[RemoteVersion]) {
     }
 }
 
-/// 将 version_pattern 应用到每个条目的版本号；无 pattern 或匹配失败时保留原值
+/// Apply version_pattern to each entry's version; keep the original when no pattern or no match
 fn apply_version_pattern(
     versions: Vec<RemoteVersion>, pattern: Option<&str>,
 ) -> Vec<RemoteVersion> {
@@ -1059,7 +1059,7 @@ fn apply_version_pattern(
         .collect()
 }
 
-/// 从 API 响应文本中提取版本条目（版本号 + lts 元数据）
+/// Extract version entries (version + lts metadata) from an API response body
 fn extract_versions_from_api(
     text: &str, version_path: Option<&str>,
 ) -> Result<Vec<RemoteVersion>, UError> {
@@ -1077,10 +1077,10 @@ fn extract_versions_from_api(
         serde_json::Value::Array(items) => {
             for item in items {
                 match item {
-                    // 纯字符串数组：无元数据
+                    // Plain string array: no metadata
                     serde_json::Value::String(s) => raw
                         .push(RemoteVersion { version: s.clone(), lts: None }),
-                    // 对象：取版本字段，并保留 lts 元数据
+                    // Object: take the version field, preserve lts metadata
                     obj @ serde_json::Value::Object(_) => {
                         if let Some(s) = object_version_field(obj) {
                             raw.push(RemoteVersion {
@@ -1109,13 +1109,13 @@ fn extract_versions_from_api(
     Ok(raw)
 }
 
-/// 从对象中取 LTS 代号：仅字符串值视为 LTS 线（node index.json 中
-/// 非 LTS 为布尔 `false`，`as_str` 天然返回 None）
+/// Take the LTS codename from an object: only a string value counts as an LTS
+/// line (node index.json uses boolean `false` for non-LTS; `as_str` naturally returns None)
 fn object_lts_field(v: &serde_json::Value) -> Option<String> {
     v.as_object()?.get("lts")?.as_str().map(str::to_string)
 }
 
-/// 从对象中取版本字段（version / tag_name / name）
+/// Take the version field from an object (version / tag_name / name)
 fn object_version_field(v: &serde_json::Value) -> Option<String> {
     let obj = v.as_object()?;
     for key in ["version", "tag_name", "name"] {
@@ -1126,7 +1126,7 @@ fn object_version_field(v: &serde_json::Value) -> Option<String> {
     None
 }
 
-/// 按点分路径在 JSON 中导航（如 `data.versions`）
+/// Navigate JSON by a dot-separated path (e.g. `data.versions`)
 fn navigate_json<'a>(
     value: &'a serde_json::Value, path: &str,
 ) -> Option<&'a serde_json::Value> {
@@ -1141,8 +1141,8 @@ fn navigate_json<'a>(
     Some(cur)
 }
 
-/// 构造校验和获取计划（渲染候选 URL 与 pattern，不联网）。
-/// 联网拉取推迟到执行期（下载完成后），保证 plan 阶段零网络 IO
+/// Build a checksum fetch plan (render candidate URLs and pattern; no network).
+/// Fetching is deferred to execution (after download) to keep the plan phase at zero network IO
 fn hash_plan(
     plugin: &ToolPlugin, bin: &InstallBin, vars: &mut HashMap<&str, &str>,
 ) -> Result<Option<HashPlan>, UError> {
@@ -1157,8 +1157,9 @@ fn hash_plan(
         )
     })?;
 
-    // 校验和文件与档案同源布局：对每个候选源分别渲染；
-    // 循环局部的 source 引用不入 vars（clone 局部副本），避免生命周期外泄
+    // The checksum file shares the archive's source layout: render on each candidate source.
+    // The per-iteration `source` reference isn't put into vars (cloned into a local copy)
+    // to avoid leaking the borrow's lifetime.
     let urls: Vec<String> = merged_sources(&plugin.tool.name, plugin)
         .iter()
         .map(|source| {
@@ -1180,8 +1181,8 @@ fn hash_plan(
     Ok(Some(HashPlan { urls, algorithm, pattern, filename }))
 }
 
-/// 按候选源顺序拉取并解析期望校验和（镜像 → default 逐个回退，
-/// 全部失败才报错）
+/// Fetch and parse the expected checksum trying candidate sources in order
+/// (mirrors → default); errors only when all fail
 async fn fetch_expected_hash(hp: &HashPlan) -> Result<String, UError> {
     let mut last_err = None;
     for url in &hp.urls {
@@ -1218,15 +1219,16 @@ async fn fetch_expected_hash(hp: &HashPlan) -> Result<String, UError> {
     )))
 }
 
-/// 从校验和文件中提取期望值：优先 pattern；无 pattern 时优先取
-/// 档案官方文件名所在行（官方校验和文件是多文件列表，盲目取首个
-/// hex 会拿到其他平台产物的哈希），最后回退全文件首个 hex
+/// Extract the expected checksum from the file: pattern first; without a pattern,
+/// prefer the line of the archive's official name (official checksum files list
+/// many files, so blindly taking the first hex could grab another platform's hash),
+/// finally falling back to the first hex in the file
 fn extract_hash(
     text: &str, pattern: Option<&str>, filename: &str,
 ) -> Result<String, UError> {
     if let Some(p) = pattern {
-        // 校验和文件为多行列表（每行一个文件），^$ 必须按行锚定；
-        // 用户 pattern 未显式写 (?m) 时自动开启
+        // Checksum files are multi-line lists (one file per line), so ^$ must anchor by line;
+        // enabled automatically when the user's pattern doesn't set (?m) explicitly
         let re = regex::RegexBuilder::new(p)
             .multi_line(true)
             .build()
@@ -1249,8 +1251,8 @@ fn extract_hash(
         });
     }
 
-    // 无 pattern：按行 `<hash> [ *]<filename>` 匹配本档案的条目；
-    // 不锚定行尾（兼容 CRLF 行尾残留 \r）
+    // No pattern: match this archive's line as `<hash> [ *]<filename>`;
+    // end of line isn't anchored to tolerate a trailing CRLF \r
     if !filename.is_empty() {
         for len in [64usize, 128] {
             let re = regex::Regex::new(&format!(
@@ -1265,7 +1267,7 @@ fn extract_hash(
         }
     }
 
-    // 最终回退：全文件第一个 64/128 位 hex
+    // Final fallback: first 64/128-bit hex in the file
     for len in [64usize, 128] {
         let re = regex::Regex::new(&format!(r"(?i)\b[0-9a-f]{{{len}}}\b"))
             .expect("valid hex regex");
@@ -1278,14 +1280,14 @@ fn extract_hash(
     })
 }
 
-/// 计算档案校验和
+/// Compute the archive checksum
 fn compute_checksum(path: &Path, algorithm: &str) -> Result<String, UError> {
     use sha2::{Sha256, Sha512};
     let file = fs::File::open(path).map_err(|source| {
         UError::FileError { path: path.to_path_buf(), source }
     })?;
-    // 分块 update 而非 io::copy：hasher 的 io::Write 实现依赖 sha2
-    // 的 std feature，依赖树裁剪后可能不可用
+    // Use chunked update instead of io::copy: hasher's io::Write impl relies on
+    // sha2's std feature, which may be unavailable after dependency-tree pruning.
     let digest: String = match algorithm {
         "sha256" => hash_file::<Sha256>(file)?,
         "sha512" => hash_file::<Sha512>(file)?,
@@ -1298,7 +1300,7 @@ fn compute_checksum(path: &Path, algorithm: &str) -> Result<String, UError> {
     Ok(digest)
 }
 
-/// 分块读取文件并更新哈希，返回 hex 摘要
+/// Read the file in chunks updating the hash; return the hex digest
 fn hash_file<D: sha2::Digest>(mut file: fs::File) -> Result<String, UError> {
     use std::io::Read;
     let mut hasher = D::new();
@@ -1319,7 +1321,7 @@ fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// URL 最后一个路径段（官方发布物文件名），无路径分隔时回退整串
+/// Last path segment of a URL (official artifact name); falls back to the whole string if no separator
 fn url_basename(url: &str) -> String {
     url.rsplit('/')
         .find(|s| !s.is_empty())
@@ -1327,7 +1329,7 @@ fn url_basename(url: &str) -> String {
         .to_string()
 }
 
-/// 按扩展名解压档案到 dest，剥离前 strip 个顶层目录
+/// Extract the archive to dest by extension, stripping the first `strip` top-level dirs
 fn extract_archive(
     archive: &Path, dest: &Path, ext: &str, strip: u32,
 ) -> Result<(), UError> {
@@ -1433,7 +1435,8 @@ fn extract_tar_gz(
     Ok(())
 }
 
-/// 将档案内路径安全拼接到 dest 下，剥离前 strip 个顶层组件，并过滤越界组件
+/// Safely join an in-archive path under dest, stripping the first `strip` top-level
+/// components and filtering any components that would escape
 fn stripped_path(
     dest: &Path, name: &str, strip: u32,
 ) -> Result<PathBuf, UError> {
@@ -1454,7 +1457,7 @@ fn stripped_path(
     Ok(comps.iter().fold(dest.to_path_buf(), |acc, c| acc.join(c)))
 }
 
-/// 将解压根目录下的 bin 子目录内容复制到安装目录
+/// Copy the bin subdirectory contents from the extraction root into the install dir
 fn copy_bin(
     extract_dir: &Path, bin_dir: &str, install_dir: &Path,
 ) -> Result<(), UError> {
@@ -1468,7 +1471,7 @@ fn copy_bin(
     copy_dir_contents(&src, install_dir)
 }
 
-/// 递归复制目录内容
+/// Recursively copy directory contents
 fn copy_dir_contents(src: &Path, dest: &Path) -> Result<(), UError> {
     for entry in fs::read_dir(src).map_err(|source| UError::FileError {
         path: src.to_path_buf(),
@@ -1512,12 +1515,12 @@ mod tests {
         fs::create_dir_all(tool.join("22.19.0")).unwrap();
         fs::create_dir_all(tool.join("22.9.1")).unwrap();
         fs::create_dir_all(tool.join("10.0.0")).unwrap();
-        // 非目录条目（缓存残留文件）不进入版本列表
+        // Non-dir entries (stray cache files) don't enter the version list
         fs::write(tool.join("records.json"), "{}").unwrap();
 
         let v = installed_versions_in(&tool);
         assert_eq!(v, vec!["10.0.0", "22.9.1", "22.19.0"]);
-        // 目录不存在 → 空表
+        // Missing dir → empty list
         assert!(installed_versions_in(&dir.path().join("missing")).is_empty());
     }
 
@@ -1529,14 +1532,14 @@ mod tests {
 
     #[test]
     fn test_latest_of_with_prefix() {
-        // 带 v 前缀的版本也能被解析比较
+        // v-prefixed versions parse and compare too
         let v = versions(&["20.11.0", "20.12.0", "v20.13.0"]);
         assert_eq!(latest_of(&v).as_deref(), Some("v20.13.0"));
     }
 
     #[test]
     fn test_lts_of_uses_metadata() {
-        // lts 元数据优先：最新版是 Current，但最新 LTS 是 22.12.0
+        // lts metadata wins: newest is Current, but the newest LTS is 22.12.0
         let v = vec![
             RemoteVersion { version: "26.7.0".into(), lts: None },
             RemoteVersion {
@@ -1549,13 +1552,13 @@ mod tests {
             },
         ];
         assert_eq!(lts_of(&v).as_deref(), Some("22.12.0"));
-        // 无任何 LTS 元数据 → None（不回退 latest）
+        // No LTS metadata at all → None (no fallback to latest)
         assert_eq!(lts_of(&versions(&["1.0.0", "2.0.0"])), None);
     }
 
     #[test]
     fn test_version_matching_keyword() {
-        // static 源命名约定回退：版本字符串含关键字
+        // static-source naming-convention fallback: version string contains the keyword
         let v = versions(&["22.0.0", "22.1.0-lts", "22.2.0-lts.1"]);
         assert_eq!(
             version_matching(&v, "lts").as_deref(),
@@ -1576,24 +1579,24 @@ mod tests {
     fn test_resolve_partial_minor() {
         let v = versions(&["22.0.0", "22.0.1", "22.1.0"]);
         assert_eq!(resolve_partial(&v, "22.0").as_deref(), Some("22.0.1"));
-        // node@22.19 → 22.19.z 中最新
+        // node@22.19 → newest in 22.19.z
         let v = versions(&["22.19.0", "22.19.3", "22.20.0"]);
         assert_eq!(resolve_partial(&v, "22.19").as_deref(), Some("22.19.3"));
     }
 
-    /// 请求 22 不得误匹配版本 2（旧实现的第三条件缺陷）
+    /// Request 22 must not match version 2 (a third-condition bug in the old implementation)
     #[test]
     fn test_resolve_partial_no_false_major_match() {
         let v = versions(&["2.0.0", "20.0.0"]);
-        // "22" 不匹配 "2"（"22" 未在 "2." 之后继续下一段）
+        // "22" doesn't match "2" (request doesn't continue past "2.")
         assert_eq!(resolve_partial(&v, "22"), None);
-        // 请求 2.0 允许匹配无点版本 2（请求在版本后继续下一段）
+        // Request 2.0 may match dot-less version 2 (request continues past the version)
         let v2 = versions(&["2", "3.0.0"]);
         assert_eq!(resolve_partial(&v2, "2.0").as_deref(), Some("2"));
     }
 
-    /// 记录的校验和与本地校验的完整流转：
-    /// 写入 → 校验通过；档案被篡改 → 校验失败
+    /// Full round-trip of the recorded checksum with local verification:
+    /// write → verify pass; tampered archive → verification fails
     #[test]
     fn test_recorded_hash_detects_tampering() {
         let dir = tempfile::tempdir().unwrap();
@@ -1602,21 +1605,21 @@ mod tests {
         let archive = tool_dir.join("node-22.0.0-win-x64.zip");
         fs::write(&archive, b"hello").unwrap();
 
-        // 未记录 hash → 跳过校验
+        // No recorded hash → verification skipped
         assert!(verify_recorded_hash(&cache_plan(dir.path(), "node-22.0.0-win-x64.zip")).is_ok());
 
-        // 记录正确 hash → 校验通过
+        // Correct hash recorded → verification passes
         let digest = compute_checksum(&archive, "sha256").unwrap();
         record_archive(&archive, 24, Some(("sha256", &digest)));
         assert!(verify_recorded_hash(&cache_plan(dir.path(), "node-22.0.0-win-x64.zip")).is_ok());
 
-        // 档案被篡改 → 校验失败
+        // Tampered archive → verification fails
         fs::write(&archive, b"tampered").unwrap();
         assert!(verify_recorded_hash(&cache_plan(dir.path(), "node-22.0.0-win-x64.zip")).is_err());
     }
 
-    /// 全局 registry 合并：插件源去重、顺序保持
-    /// （测试环境 GLOBAL_CONFIG.registry 为空，全局分支经由配置测试覆盖）
+    /// Global registry merge: plugin sources deduped, order preserved.
+    /// (The test env has an empty GLOBAL_CONFIG.registry; the global branch is covered by config tests.)
     #[test]
     fn test_merged_sources_dedup_plugin_sources() {
         let plugin: ToolPlugin = toml::from_str(
@@ -1680,7 +1683,7 @@ bin_dir = "bin"
                     version: "v20.12.0".into(),
                     lts: Some("Iron".into())
                 },
-                // lts: false（布尔）不构成 LTS 标记
+                // lts: false (boolean) doesn't count as an LTS marker
                 RemoteVersion { version: "v22.0.0".into(), lts: None },
             ]
         );
@@ -1702,7 +1705,7 @@ bin_dir = "bin"
 
     #[test]
     fn test_apply_pattern_keeps_lts_metadata() {
-        // pattern 清洗 v 前缀时必须保留 lts 元数据
+        // When the pattern strips the v prefix, lts metadata must be preserved
         let raw = vec![
             RemoteVersion {
                 version: "v20.11.0".into(),
@@ -1729,7 +1732,7 @@ bin_dir = "bin"
         let p = stripped_path(dest, "pkg-1.0.0/bin/app.exe", 1).unwrap();
         assert_eq!(p, dest.join("bin").join("app.exe"));
 
-        // 越界组件（../）被过滤，不会逃逸到 dest 之外
+        // Escaping components (../) are filtered so nothing escapes dest
         let p = stripped_path(dest, "pkg/../../evil.txt", 1).unwrap();
         assert_eq!(p, dest.join("evil.txt"));
     }
@@ -1761,7 +1764,7 @@ bin_dir = "bin"
         fs::write(&file, b"hello").unwrap();
 
         let digest = compute_checksum(&file, "sha256").unwrap();
-        // "hello" 的 sha256
+        // sha256 of "hello"
         assert_eq!(
             digest,
             "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
@@ -1778,13 +1781,13 @@ bin_dir = "bin"
         )
         .unwrap();
         assert_eq!(out.len(), 64);
-        // 无 pattern 时按档案文件名匹配所在行
+        // Without a pattern, match the line by archive file name
         let out2 = extract_hash(text, None, "node.exe").unwrap();
         assert_eq!(out2.len(), 64);
     }
 
-    /// SHASUMS256.txt 实际形态：多行、目标文件不在首行、
-    //  官方文件名与 pattern 的 ^$ 锚定必须逐行生效
+    /// SHASUMS256.txt real shape: multiple lines, target not first,
+    // and the ^$ anchors of the pattern must apply per line.
     #[test]
     fn test_extract_hash_multiline_anchors() {
         let text = "\
@@ -1800,8 +1803,8 @@ bin_dir = "bin"
         );
     }
 
-    /// 无 pattern + 多文件列表：必须按档案文件名取行，
-    /// 而非全文件第一个 hex（那是其他平台产物的哈希）
+    /// No pattern + multi-file lists: must take the line by archive file name,
+    /// not the first hex in the file (which belongs to another platform's artifact)
     #[test]
     fn test_extract_hash_no_pattern_prefers_filename_line() {
         let text = "\
@@ -1814,7 +1817,7 @@ bin_dir = "bin"
             out,
             "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
         );
-        // 文件名无对应行时回退全文件首个 hex
+        // With no matching line for the file name, fall back to the first hex in the file
         let fallback = extract_hash(text, None, "no-such-file.zip").unwrap();
         assert_eq!(fallback.len(), 64);
         assert!(fallback.starts_with("1111"));
@@ -1830,7 +1833,7 @@ bin_dir = "bin"
         assert_eq!(url_basename("plain-name"), "plain-name");
     }
 
-    /// 将文件 mtime 回拨指定时长，用于构造"过期"档案
+    /// Rewind a file's mtime by a duration, to build an "expired" archive
     fn age_file(path: &Path, ago: Duration) {
         let f = fs::File::options().write(true).open(path).unwrap();
         f.set_modified(SystemTime::now() - ago).unwrap();
@@ -1841,13 +1844,13 @@ bin_dir = "bin"
         let dir = tempfile::tempdir().unwrap();
         let cache = dir.path();
 
-        // 旧布局：cache/node/{extract/ 残留, 档案}
+        // Legacy layout: cache/node/{extract leftovers, archive}
         let legacy = cache.join("node");
         fs::create_dir_all(legacy.join("extract")).unwrap();
         fs::write(legacy.join("extract/leftover.txt"), b"x").unwrap();
         fs::write(legacy.join("old.zip"), b"x").unwrap();
 
-        // cache 根下的散落文件（如 plugins.json）不属于下载缓存
+        // Loose files at the cache root (e.g. plugins.json) aren't download cache
         fs::write(cache.join("plugins.json"), b"{}").unwrap();
 
         gc_cache_at(cache, 24);
@@ -1915,7 +1918,7 @@ bin_dir = "bin"
 
     #[test]
     fn test_gc_zero_ttl_purges_all() {
-        // ttl = 0 表示完全不保留缓存：旧布局与新布局全部清除
+        // ttl = 0 means keep no cache: clear both legacy and new layouts
         let dir = tempfile::tempdir().unwrap();
         let cache = dir.path();
 
@@ -1949,7 +1952,7 @@ bin_dir = "bin"
             .unwrap();
         assert_eq!(first.ttl_hours, 24);
 
-        // 重复下载同一档案会刷新下载时间
+        // Re-downloading the same archive refreshes its download time
         std::thread::sleep(Duration::from_secs(1));
         record_archive(&archive, 48, Some(("sha256", "abc123")));
         let second = load_records(&tool_dir)
@@ -1961,7 +1964,7 @@ bin_dir = "bin"
         assert!(second.downloaded_at > first.downloaded_at);
     }
 
-    /// 构造指向 dir 下工具档案的安装计划（仅用于缓存命中判定）
+    /// Build an install plan pointing to an archive under dir (only for cache-hit decisions)
     fn cache_plan(dir: &Path, file: &str) -> InstallPlan {
         InstallPlan {
             name: "node".into(),
@@ -1983,18 +1986,18 @@ bin_dir = "bin"
         let tool_dir = dir.join("node");
         fs::create_dir_all(&tool_dir).unwrap();
 
-        // 文件不存在 → 未命中
+        // Missing file → not a hit
         assert!(!archive_cache_hit(&cache_plan(dir, "a.zip")));
 
-        // 存在且非空、无记录（孤儿档案）→ 命中
+        // Exists, non-empty, no record (orphan) → hit
         fs::write(tool_dir.join("a.zip"), b"archive").unwrap();
         assert!(archive_cache_hit(&cache_plan(dir, "a.zip")));
 
-        // 空文件（上次下载中断）→ 未命中
+        // Empty file (previous download interrupted) → not a hit
         fs::write(tool_dir.join("empty.zip"), b"").unwrap();
         assert!(!archive_cache_hit(&cache_plan(dir, "empty.zip")));
 
-        // 记录未过期 → 命中；已过期 → 未命中
+        // Record within TTL → hit; expired → not a hit
         let expired = tool_dir.join("old.zip");
         fs::write(&expired, b"archive").unwrap();
         record_archive(&expired, 24, None);
@@ -2016,7 +2019,7 @@ bin_dir = "bin"
 
     #[test]
     fn test_parse_cache_expiry() {
-        // 文件名携带 16 进制过期时间
+        // The file name carries a hex expiry
         assert_eq!(
             parse_cache_expiry(
                 "node",
@@ -2024,7 +2027,7 @@ bin_dir = "bin"
             ),
             Some(0x19a4c0f00)
         );
-        // 非 16 进制 / 其他工具前缀 / 缺后缀 → 无法解析
+        // Non-hex / other tool prefix / missing suffix → not parseable
         assert_eq!(
             parse_cache_expiry("node", "node_remote_version_xz.json"),
             None
@@ -2034,7 +2037,7 @@ bin_dir = "bin"
             None
         );
         assert_eq!(parse_cache_expiry("node", "node_remote_version_10"), None);
-        // 前缀必须是完整段：nodej_remote_version_10 不属于 node
+        // The prefix must be a full segment: nodej_remote_version_10 isn't node
         assert_eq!(
             parse_cache_expiry("node", "nodej_remote_version_10.json"),
             None
@@ -2053,7 +2056,7 @@ bin_dir = "bin"
         ];
         save_cached_versions(dir.path(), "node", &versions);
 
-        // 保存后文件名应含 16 进制过期时间，且可原样读回（含 lts 元数据）
+        // The saved file name should hold a hex expiry and read back exactly (including lts metadata)
         let saved: Vec<String> = fs::read_dir(dir.path())
             .unwrap()
             .flatten()
@@ -2070,7 +2073,7 @@ bin_dir = "bin"
     #[test]
     fn test_version_cache_expired_is_removed() {
         let dir = tempfile::tempdir().unwrap();
-        // 过去的时间戳 → 已过期
+        // Past timestamp → expired
         let stale =
             dir.path().join(version_cache_file("node", unix_now() - 10));
         fs::write(&stale, r#"[{"version":"1.0.0"}]"#).unwrap();
@@ -2102,7 +2105,7 @@ bin_dir = "bin"
     #[test]
     fn test_load_cache_prefers_latest_expiry() {
         let dir = tempfile::tempdir().unwrap();
-        // 同工具两份缓存（异常残留），应取过期时间更晚的一份
+        // Two caches for one tool (anomalous leftover): take the later-expiring one
         let soon = dir.path().join(version_cache_file("node", unix_now() + 60));
         let late =
             dir.path().join(version_cache_file("node", unix_now() + 3600));
@@ -2117,7 +2120,7 @@ bin_dir = "bin"
 
     #[test]
     fn test_load_cache_rejects_legacy_format() {
-        // 旧版纯字符串数组缓存 → 解析失败视为无缓存（重新拉取后自然升级）
+        // Legacy plain-string-array cache → parse failure treated as no cache (upgrades naturally on refetch)
         let dir = tempfile::tempdir().unwrap();
         let legacy =
             dir.path().join(version_cache_file("node", unix_now() + 3600));
@@ -2128,7 +2131,7 @@ bin_dir = "bin"
 
     #[test]
     fn test_gc_skips_non_tool_cache_dirs() {
-        // versions/builds 属其他缓存分区，不应被误当旧布局工具目录迁移
+        // versions/builds are other cache partitions; must not be migrated as legacy tool dirs
         let dir = tempfile::tempdir().unwrap();
         let cache = dir.path();
         let legacy = cache.join("node");
