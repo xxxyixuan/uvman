@@ -1,0 +1,29 @@
+# Config for automatically generated release notes (GitHub official mechanism).
+# Used by `generate_release_notes: true` in .github/workflows/release.yml and
+# by the "Generate release notes" button in the GitHub UI.
+# PR summary sections follow .tmp/github-release-notes-template.md structure:
+# 新增特性 / 优化与改进 / Bug 修复 / 破坏性变更.
+changelog:
+  exclude:
+    labels:
+      - ignore-for-release
+    authors:
+      - github-actions[bot]
+  categories:
+    - title: 新增特性
+      labels:
+        - feat
+        - enhancement
+    - title: 优化与改进
+      labels:
+        - refactor
+        - perf
+        - docs
+        - chore
+    - title: Bug 修复
+      labels:
+        - fix
+        - bug
+    - title: 破坏性变更
+      labels:
+        - breaking
