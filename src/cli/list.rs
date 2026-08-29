@@ -1,9 +1,13 @@
-use std::io::{self, IsTerminal, Write};
+use std::io::{self, IsTerminal};
 
-use crossterm::cursor::{Hide, MoveTo, Show};
+use crossterm::ExecutableCommand;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
-use crossterm::terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen};
-use crossterm::{ExecutableCommand, QueueableCommand};
+use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
+use ratatui::prelude::{
+    Color, Constraint, CrosstermBackend, Layout, Line, Modifier, Rect, Span, Style,
+};
+use ratatui::widgets::Paragraph;
+use ratatui::{Frame, Terminal};
 use serde::Serialize;
 
 use crate::core::current::{self, CurrentTools};
@@ -137,9 +141,8 @@ impl List {
             None => versions.iter().collect(),
         };
 
-        let header = ogreen(format!("{tool}:")).to_string();
         if selected.is_empty() {
-            println!("{header}");
+            println!("{}", ogreen(format!("{tool}:")));
             match &self.filter {
                 Some(prefix) => println!("{}", odim(format!("no versions match '{prefix}'"))),
                 None => println!("  (none)"),
@@ -147,24 +150,26 @@ impl List {
             return Ok(());
         }
 
-        let mut lines = vec![header];
-        for v in &selected {
-            let markers = markers_for(
-                &v.version,
-                current.as_deref(),
-                latest.as_deref(),
-                lts.as_ref().map(|(version, codename)| (version.as_str(), codename.as_str())),
-            );
-            lines.push(render_version_line(&v.version, &markers));
-        }
+        let rows: Vec<VersionRow> = selected
+            .iter()
+            .map(|v| VersionRow {
+                version: v.version.clone(),
+                markers: markers_for(
+                    &v.version,
+                    current.as_deref(),
+                    latest.as_deref(),
+                    lts.as_ref().map(|(version, codename)| (version.as_str(), codename.as_str())),
+                ),
+            })
+            .collect();
 
         // The user's rule: everything ≤ PAGER_THRESHOLD prints in full; more
         // than that opens an interactive pager on a terminal. --all and
         // piped/redirected output always print in full.
         if selected.len() > PAGER_THRESHOLD && !self.all && io::stdout().is_terminal() {
-            show_pager(&lines).unwrap_or_else(|_| print_lines(&lines));
+            show_pager(tool, &rows).unwrap_or_else(|_| print_plain(tool, &rows));
         } else {
-            print_lines(&lines);
+            print_plain(tool, &rows);
         }
         Ok(())
     }
@@ -237,75 +242,66 @@ fn installed_desc(name: &str) -> Vec<String> {
 
 // ---------------- Pager (long --remote listings) ----------------
 
-/// Interactive scroll view (alternate screen) for listings longer than the
-/// pager threshold. Falls back to a plain full print when the terminal can't
-/// be set up.
+/// One row of the pager: a version plus its annotations
+struct VersionRow {
+    version: String,
+    markers: Vec<Marker>,
+}
+
+/// Scroll/search state of one pager session
+#[derive(Default)]
+struct PagerState {
+    /// First visible row
+    offset: usize,
+    /// Search input being typed (Some = input mode)
+    query: Option<String>,
+    /// Confirmed search term (for `n`, next match)
+    needle: Option<String>,
+    /// Row index of the last jumped-to match
+    last_match: Option<usize>,
+    /// Transient footer message (e.g. "not found: x"); cleared on next key
+    message: Option<String>,
+}
+
+/// Marker/search styles used by the pager
+const CURRENT_STYLE: Style = Style::new().fg(Color::Green);
+const DIM_STYLE: Style = Style::new().add_modifier(Modifier::DIM);
+const SEARCH_MATCH_STYLE: Style = Style::new().add_modifier(Modifier::REVERSED);
+
+/// Interactive scroll view (alternate screen, ratatui) for listings longer
+/// than the pager threshold. Falls back to a plain full print when the
+/// terminal can't be set up.
 ///
 /// Keys: ↑/↓/j/k line scroll, ←/→ page, Home/End/g/G jump, `/` search
 /// (Enter jumps to the match, `n` next match), q/Esc/Ctrl-C to quit.
-fn show_pager(lines: &[String]) -> io::Result<()> {
+fn show_pager(tool: &str, rows: &[VersionRow]) -> io::Result<()> {
     terminal::enable_raw_mode()?;
     let mut stdout = io::stdout();
     stdout.execute(EnterAlternateScreen)?;
-    let result = pager_loop(&mut stdout, lines);
-    let _ = stdout.execute(Show);
-    let _ = stdout.execute(LeaveAlternateScreen);
+    let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
+    terminal.hide_cursor()?;
+    let result = pager_loop(&mut terminal, tool, rows);
+    let _ = terminal.show_cursor();
+    let _ = terminal.backend_mut().execute(LeaveAlternateScreen);
     let _ = terminal::disable_raw_mode();
     result
 }
 
-fn pager_loop(stdout: &mut io::Stdout, lines: &[String]) -> io::Result<()> {
-    // Visible chars per line (SGR sequences stripped); the search corpus
-    let plain: Vec<String> =
-        lines.iter().map(|l| console::strip_ansi_codes(l).to_string()).collect();
+fn pager_loop(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, tool: &str, rows: &[VersionRow],
+) -> io::Result<()> {
+    // Version strings are the search corpus
+    let versions: Vec<&str> = rows.iter().map(|r| r.version.as_str()).collect();
+    let mut state = PagerState::default();
 
-    let mut offset = 0usize;
-    // Search input being typed (Some = input mode)
-    let mut query: Option<String> = None;
-    // Confirmed search term (for `n`, next match)
-    let mut needle: Option<String> = None;
-    // Line index of the last jumped-to match
-    let mut last_match: Option<usize> = None;
-    // Transient footer message (e.g. "not found: x"); cleared on next key
-    let mut message: Option<String> = None;
-
-    stdout.execute(Hide)?;
     loop {
-        let (cols, rows) = terminal::size().unwrap_or((80, 24));
-        // One row stays reserved for the status/key footer
-        let viewport = ((rows as usize).saturating_sub(1)).min(lines.len()).max(1);
-        offset = clamp_offset(offset, lines.len(), viewport);
+        // Fixed header/footer rows; the versions scroll in between
+        let viewport = terminal.size()?.height.saturating_sub(2).max(1) as usize;
+        state.offset = clamp_offset(state.offset, rows.len(), viewport);
 
-        // Live highlight: the query being typed wins over the confirmed term
-        let active: Option<String> =
-            query.clone().filter(|q| !q.is_empty()).or_else(|| needle.clone());
+        terminal.draw(|frame| render_pager(frame, tool, rows, &state, viewport))?;
 
-        // Redraw the whole viewport; \r\n because raw mode doesn't translate
-        // \n, and a trailing reset guards against truncation cutting a color
-        // sequence mid-way
-        stdout.queue(MoveTo(0, 0))?;
-        for (row, line) in lines[offset..offset + viewport].iter().enumerate() {
-            let rendered = match &active {
-                Some(term) => highlight_line(line, &plain[offset + row], &term.to_lowercase()),
-                None => line.clone(),
-            };
-            let fitted = console::pad_str(&rendered, cols as usize, console::Alignment::Left, None);
-            write!(stdout, "{fitted}\x1b[0m\r\n")?;
-        }
-        let footer = match (&query, &message) {
-            (Some(q), _) => odim(format!("/{q}▏ · Enter jump · Esc cancel")),
-            (None, Some(msg)) => odim(msg.clone()),
-            (None, None) => {
-                let total = lines.len();
-                let (start, end) = (offset + 1, offset + viewport.min(total - offset));
-                odim(format!("{start}-{end}/{total} lines · / search · n next · ←→ page · q quit"))
-            },
-        };
-        write!(stdout, "{footer}\x1b[0m")?;
-        stdout.queue(Clear(ClearType::FromCursorDown))?;
-        stdout.flush()?;
-
-        // Offsets mutated below are clamped at the top of the next frame
+        // Offsets mutated below are clamped again in the next frame
         let Event::Key(key) = event::read()? else { continue };
         if key.kind != KeyEventKind::Press {
             continue;
@@ -314,9 +310,9 @@ fn pager_loop(stdout: &mut io::Stdout, lines: &[String]) -> io::Result<()> {
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
             break;
         }
-        message = None;
+        state.message = None;
 
-        match query.take() {
+        match state.query.take() {
             // ---- search input mode ----
             Some(mut q) => match key.code {
                 KeyCode::Enter => {
@@ -324,55 +320,55 @@ fn pager_loop(stdout: &mut io::Stdout, lines: &[String]) -> io::Result<()> {
                         continue;
                     }
                     // First match after the viewport top, wrapping to the top
-                    match find_match(&plain, &q, offset + 1) {
+                    match find_match(&versions, &q, state.offset + 1) {
                         Some(i) => {
-                            needle = Some(q);
-                            last_match = Some(i);
+                            state.needle = Some(q);
+                            state.last_match = Some(i);
                             // Jump only when the match isn't already on screen
-                            if i < offset || i >= offset + viewport {
-                                offset = i;
+                            if i < state.offset || i >= state.offset + viewport {
+                                state.offset = i;
                             }
                         },
-                        None => message = Some(format!("not found: {q}")),
+                        None => state.message = Some(format!("not found: {q}")),
                     }
                 },
                 KeyCode::Esc => {}, // cancel; query stays dropped
                 KeyCode::Backspace => {
                     q.pop();
-                    query = Some(q);
+                    state.query = Some(q);
                 },
                 KeyCode::Char(c) => {
                     q.push(c);
-                    query = Some(q);
+                    state.query = Some(q);
                 },
-                _ => query = Some(q), // other keys don't disturb the input
+                _ => state.query = Some(q), // other keys don't disturb the input
             },
             // ---- normal mode ----
             None => match key.code {
                 KeyCode::Char('q') | KeyCode::Esc => break,
-                KeyCode::Char('/') => query = Some(String::new()),
-                KeyCode::Char('n') => match &needle {
+                KeyCode::Char('/') => state.query = Some(String::new()),
+                KeyCode::Char('n') => match state.needle.clone() {
                     Some(term) => {
                         // Next match after the last one, wrapping to the top
-                        let origin = last_match.map_or(0, |m| m + 1);
-                        match find_match(&plain, term, origin) {
+                        let origin = state.last_match.map_or(0, |m| m + 1);
+                        match find_match(&versions, &term, origin) {
                             Some(i) => {
-                                last_match = Some(i);
-                                if i < offset || i >= offset + viewport {
-                                    offset = i;
+                                state.last_match = Some(i);
+                                if i < state.offset || i >= state.offset + viewport {
+                                    state.offset = i;
                                 }
                             },
-                            None => message = Some(format!("not found: {term}")),
+                            None => state.message = Some(format!("not found: {term}")),
                         }
                     },
-                    None => message = Some("no search yet — press /".into()),
+                    None => state.message = Some("no search yet — press /".into()),
                 },
-                KeyCode::Down | KeyCode::Char('j') => offset += 1,
-                KeyCode::Up | KeyCode::Char('k') => offset = offset.saturating_sub(1),
-                KeyCode::Right => offset += viewport,
-                KeyCode::Left => offset = offset.saturating_sub(viewport),
-                KeyCode::Home | KeyCode::Char('g') => offset = 0,
-                KeyCode::End | KeyCode::Char('G') => offset = usize::MAX,
+                KeyCode::Down | KeyCode::Char('j') => state.offset += 1,
+                KeyCode::Up | KeyCode::Char('k') => state.offset = state.offset.saturating_sub(1),
+                KeyCode::Right => state.offset += viewport,
+                KeyCode::Left => state.offset = state.offset.saturating_sub(viewport),
+                KeyCode::Home | KeyCode::Char('g') => state.offset = 0,
+                KeyCode::End | KeyCode::Char('G') => state.offset = usize::MAX,
                 _ => {},
             },
         }
@@ -380,55 +376,116 @@ fn pager_loop(stdout: &mut io::Stdout, lines: &[String]) -> io::Result<()> {
     Ok(())
 }
 
-/// First line at/after `start` (wrapping to the top) whose plain text
-/// contains `term` case-insensitively; None when nothing matches
-fn find_match(plain: &[String], term: &str, start: usize) -> Option<usize> {
-    if plain.is_empty() || term.is_empty() {
-        return None;
+/// One frame: fixed `tool:` header, the visible version rows, and the
+/// status/key footer
+fn render_pager(
+    frame: &mut Frame, tool: &str, rows: &[VersionRow], state: &PagerState, viewport: usize,
+) {
+    // Live highlight: the query being typed wins over the confirmed term
+    let active = state.query.as_deref().filter(|q| !q.is_empty()).or(state.needle.as_deref());
+
+    let footer = match (&state.query, &state.message) {
+        (Some(q), _) => dim_line(format!("/{q}▏ · Enter jump · Esc cancel")),
+        (None, Some(msg)) => dim_line(msg.clone()),
+        (None, None) => {
+            let total = rows.len();
+            let (start, end) =
+                (state.offset + 1, state.offset + viewport.min(total - state.offset));
+            dim_line(format!(
+                "{start}-{end}/{total} versions · / search · n next · ←→ page · q quit"
+            ))
+        },
+    };
+
+    let mut list = Vec::with_capacity(viewport);
+    for row in &rows[state.offset..state.offset + viewport] {
+        let matched = match active {
+            Some(term) if matches_prefix(&row.version, term) => {
+                matched_prefix_len(term, &row.version)
+            },
+            _ => 0,
+        };
+        list.push(Line::from(version_spans(&row.version, &row.markers, matched)));
     }
-    let term = term.to_lowercase();
-    (0..plain.len())
-        .map(|i| (i + start) % plain.len())
-        .find(|&i| plain[i].to_lowercase().contains(&term))
+
+    let [header_area, list_area, footer_area]: [Rect; 3] = Layout::vertical([
+        Constraint::Length(1), // tool header
+        Constraint::Min(1),    // scrolling version list
+        Constraint::Length(1), // status/key footer
+    ])
+    .areas(frame.area());
+    frame.render_widget(
+        Paragraph::new(Line::styled(format!("{tool}:"), CURRENT_STYLE)),
+        header_area,
+    );
+    frame.render_widget(Paragraph::new(list), list_area);
+    frame.render_widget(Paragraph::new(footer), footer_area);
 }
 
-/// Wrap the first case-insensitive occurrence of `needle_lower` in `plain`
-/// with reverse video, spliced into the styled line at the matching position.
-/// Both strings share the same visible chars; SGR sequences only occupy extra
-/// chars in the styled form, so each plain char's styled index is recorded
-/// while walking the styled string once. Version lines are ASCII, so byte
-/// offsets from the lowercase search map 1:1 to char positions.
-fn highlight_line(styled: &str, plain: &str, needle_lower: &str) -> String {
-    let Some(byte_pos) = plain.to_lowercase().find(needle_lower) else {
-        return styled.to_string();
-    };
-    let start = plain[..byte_pos].chars().count();
-    let len = needle_lower.chars().count();
+/// First row at/after `start` (wrapping to the top) whose version matches
+/// `term` as a version prefix — 22 matches 22.x.y, never x.22.y or x.y.22 —
+/// the same semantics as `use <tool>@<term>`. None when nothing matches.
+fn find_match(versions: &[&str], term: &str, start: usize) -> Option<usize> {
+    if versions.is_empty() || term.is_empty() {
+        return None;
+    }
+    (0..versions.len())
+        .map(|i| (i + start) % versions.len())
+        .find(|&i| matches_prefix(versions[i], term))
+}
 
-    let styled_chars: Vec<char> = styled.chars().collect();
-    // styled index of each plain char (escape sequences contribute none)
-    let mut map = Vec::with_capacity(plain.chars().count());
-    let mut in_escape = false;
-    for (idx, c) in styled_chars.iter().enumerate() {
-        match c {
-            '\x1b' => in_escape = true,
-            'm' if in_escape => in_escape = false,
-            _ if in_escape => {},
-            _ => map.push(idx),
+/// Number of leading version chars covered by the prefix match (drives the
+/// search highlight); both sides compared without their v/V prefix
+fn matched_prefix_len(term: &str, version: &str) -> usize {
+    bare_version(term).chars().count().min(bare_version(version).chars().count())
+}
+
+/// One version row as styled spans: ` - <version> (<markers>)`, with the
+/// first `highlight_len` chars of the bare version in reverse video when
+/// searching. The v/V prefix, if present, is left unhighlighted.
+fn version_spans(version: &str, markers: &[Marker], highlight_len: usize) -> Vec<Span<'static>> {
+    let mut spans = vec![Span::raw(" - ")];
+    let bare = bare_version(version);
+    let bare_start = version.len() - bare.len();
+    if bare_start > 0 {
+        spans.push(Span::raw(version[..bare_start].to_string()));
+    }
+    let hl = highlight_len.min(bare.chars().count());
+    let (matched, tail) =
+        bare.char_indices().nth(hl).map_or((bare, ""), |(byte, _)| (&bare[..byte], &bare[byte..]));
+    if !matched.is_empty() {
+        spans.push(Span::styled(matched.to_string(), SEARCH_MATCH_STYLE));
+    }
+    if !tail.is_empty() {
+        spans.push(Span::raw(tail.to_string()));
+    }
+    if !markers.is_empty() {
+        spans.push(Span::raw(" ("));
+        for (i, marker) in markers.iter().enumerate() {
+            if i > 0 {
+                spans.push(Span::raw(", "));
+            }
+            let style = match marker {
+                Marker::Current => CURRENT_STYLE,
+                _ => DIM_STYLE,
+            };
+            spans.push(Span::styled(marker.label(), style));
         }
+        spans.push(Span::raw(")"));
     }
-    if start + len > map.len() {
-        return styled.to_string();
+    spans
+}
+
+fn dim_line(text: String) -> Line<'static> {
+    Line::styled(text, DIM_STYLE)
+}
+
+/// Non-interactive full print of a tool's rows (also the pager fallback)
+fn print_plain(tool: &str, rows: &[VersionRow]) {
+    println!("{}", ogreen(format!("{tool}:")));
+    for row in rows {
+        println!("{}", render_version_line(&row.version, &row.markers));
     }
-    // SGR 7/27 toggles reverse video without disturbing the line's own color
-    let s = map[start];
-    let m = map[start + len - 1] + 1;
-    let out: String = styled_chars[..s].iter().collect::<String>()
-        + "\x1b[7m"
-        + &styled_chars[s..m].iter().collect::<String>()
-        + "\x1b[27m"
-        + &styled_chars[m..].iter().collect::<String>();
-    out
 }
 
 /// Clamp a scroll offset so the viewport stays inside the line list
@@ -437,13 +494,6 @@ fn clamp_offset(offset: usize, total: usize, viewport: usize) -> usize {
         return 0;
     }
     offset.min(total - viewport)
-}
-
-/// Plain full print (non-interactive path)
-fn print_lines(lines: &[String]) {
-    for line in lines {
-        println!("{line}");
-    }
 }
 
 /// The `@lts` target: newest entry carrying LTS metadata, as (version,
@@ -685,32 +735,50 @@ mod tests {
     }
 
     #[test]
-    fn test_find_match_wraps_and_case_insensitive() {
-        let plain: Vec<String> = [" - v26.8.1", " - v24.20.0 (lts: Krypton)", " - v20.19.2"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        // Case-insensitive codename search
-        assert_eq!(find_match(&plain, "krypton", 0), Some(1));
-        // Searching from after the match wraps back to the top
-        assert_eq!(find_match(&plain, "26.8", 1), Some(0));
+    fn test_find_match_prefix_semantics() {
+        let versions = ["26.8.1", "22.19.0", "22.0.0", "2.22.0", "v21.0.0"];
+        // Searching 22 matches only the 22.x lines, never 2.22.0 or 26.8.1
+        assert_eq!(find_match(&versions, "22", 0), Some(1));
+        // `n` walks the remaining 22.x line, then wraps back to the first
+        assert_eq!(find_match(&versions, "22", 2), Some(2));
+        assert_eq!(find_match(&versions, "22", 3), Some(1));
+        // The v/V prefix on either side is ignored (raw plugin data)
+        assert_eq!(find_match(&versions, "21", 0), Some(4));
+        assert_eq!(find_match(&versions, "v22", 0), Some(1));
         // No match anywhere / empty term / empty corpus
-        assert_eq!(find_match(&plain, "18.", 0), None);
-        assert_eq!(find_match(&plain, "", 0), None);
+        assert_eq!(find_match(&versions, "18", 0), None);
+        assert_eq!(find_match(&versions, "", 0), None);
         assert_eq!(find_match(&[], "x", 0), None);
     }
 
     #[test]
-    fn test_highlight_line_splices_reverse_video() {
-        let styled = "\x1b[32m - \x1b[0mv20.19.2 (current)";
-        let plain = " - v20.19.2 (current)";
-        // The match is wrapped in reverse video inside the styled string,
-        // leaving the line's own color sequences intact
-        let out = highlight_line(styled, plain, "19.2");
-        assert_eq!(out, "\x1b[32m - \x1b[0mv20.\x1b[7m19.2\x1b[27m (current)");
+    fn test_matched_prefix_len() {
+        // The highlighted part is the matched prefix of the bare version
+        assert_eq!(matched_prefix_len("22", "22.19.0"), 2);
+        assert_eq!(matched_prefix_len("22.19", "22.19.0"), 5);
+        // Request continuing past the version highlights the whole version
+        assert_eq!(matched_prefix_len("2.0", "2"), 1);
+        // v/V prefixes are stripped on both sides
+        assert_eq!(matched_prefix_len("v22", "v22.19.0"), 2);
+    }
 
-        // No occurrence: the line passes through untouched
-        assert_eq!(highlight_line(styled, plain, "18."), styled);
+    #[test]
+    fn test_version_spans_highlight_and_markers() {
+        use ratatui::prelude::{Color, Modifier};
+
+        let spans = version_spans("22.19.0", &[Marker::Current, Marker::Lts("Jod".into())], 2);
+        let texts: Vec<&str> = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(texts, vec![" - ", "22", ".19.0", " (", "current", ", ", "lts: Jod", ")"]);
+        // The matched prefix carries reverse video, current is green, the
+        // lts codename is dim
+        assert!(spans[1].style.add_modifier.contains(Modifier::REVERSED));
+        assert_eq!(spans[4].style.fg, Some(Color::Green));
+        assert!(spans[6].style.add_modifier.contains(Modifier::DIM));
+
+        // A v/V prefix stays unhighlighted; no markers means no suffix spans
+        let spans = version_spans("v22.19.0", &[], 2);
+        let texts: Vec<&str> = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(texts, vec![" - ", "v", "22", ".19.0"]);
     }
 
     #[test]
