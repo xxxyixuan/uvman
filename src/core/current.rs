@@ -7,13 +7,16 @@ use serde::{Deserialize, Serialize};
 use crate::core::error::UError;
 use crate::core::paths::tool_current_path;
 
-/// `config/tool_current.toml`: records the currently active version of each tool.
+/// `config/tool_current.toml`: records the currently active version of each
+/// tool.
 ///
 /// Responsibility boundary (per design doc): `use` is the sole writer;
-/// `env` / `list` only read. A missing or corrupt file is treated as "no active version".
+/// `env` / `list` only read. A missing or corrupt file is treated as "no active
+/// version".
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct CurrentTools {
-    /// Keyed by tool name; BTreeMap keeps serialized output ordered (idempotent diff)
+    /// Keyed by tool name; BTreeMap keeps serialized output ordered (idempotent
+    /// diff)
     #[serde(flatten)]
     pub tools: BTreeMap<String, CurrentEntry>,
 }
@@ -23,7 +26,8 @@ pub struct CurrentEntry {
     pub version: String,
 }
 
-/// Load the current-tools table (default path); returns empty on missing/corrupt
+/// Load the current-tools table (default path); returns empty on
+/// missing/corrupt
 pub fn load() -> CurrentTools {
     load_from(&tool_current_path())
 }
@@ -46,29 +50,17 @@ pub fn load_from(path: &Path) -> CurrentTools {
     }
 }
 
-pub fn set_current_at(
-    path: &Path,
-    tool: &str,
-    version: &str,
-) -> Result<(), UError> {
+pub fn set_current_at(path: &Path, tool: &str, version: &str) -> Result<(), UError> {
     let mut table = load_from(path);
-    table
-        .tools
-        .insert(tool.to_string(), CurrentEntry { version: version.to_string() });
+    table.tools.insert(tool.to_string(), CurrentEntry { version: version.to_string() });
 
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|source| UError::FileError {
-            path: parent.to_path_buf(),
-            source,
-        })?;
+        fs::create_dir_all(parent)
+            .map_err(|source| UError::FileError { path: parent.to_path_buf(), source })?;
     }
-    let text = toml::to_string_pretty(&table).map_err(|source| {
-        UError::TomlSerializeError { path: path.to_path_buf(), source }
-    })?;
-    fs::write(path, text).map_err(|source| UError::FileError {
-        path: path.to_path_buf(),
-        source,
-    })
+    let text = toml::to_string_pretty(&table)
+        .map_err(|source| UError::TomlSerializeError { path: path.to_path_buf(), source })?;
+    fs::write(path, text).map_err(|source| UError::FileError { path: path.to_path_buf(), source })
 }
 
 #[cfg(test)]
@@ -84,14 +76,8 @@ mod tests {
         set_current_at(&path, "go", "1.23.0").unwrap();
 
         let table = load_from(&path);
-        assert_eq!(
-            table.tools.get("node").map(|e| e.version.as_str()),
-            Some("22.19.0")
-        );
-        assert_eq!(
-            table.tools.get("go").map(|e| e.version.as_str()),
-            Some("1.23.0")
-        );
+        assert_eq!(table.tools.get("node").map(|e| e.version.as_str()), Some("22.19.0"));
+        assert_eq!(table.tools.get("go").map(|e| e.version.as_str()), Some("1.23.0"));
 
         // Switching an existing entry overwrites the old version
         set_current_at(&path, "node", "22.23.2").unwrap();

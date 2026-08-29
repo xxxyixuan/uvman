@@ -6,10 +6,8 @@ use crate::core::error::UError;
 /// Ensure that the specified directory exists.
 pub fn ensure_dir(path: impl AsRef<Path>) -> Result<(), UError> {
     let path = path.as_ref();
-    fs::create_dir_all(path).map_err(|source| UError::FileError {
-        path: path.to_path_buf(),
-        source,
-    })
+    fs::create_dir_all(path)
+        .map_err(|source| UError::FileError { path: path.to_path_buf(), source })
 }
 
 #[cfg(test)]

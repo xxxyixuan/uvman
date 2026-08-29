@@ -43,8 +43,7 @@ async fn list_remote(tool: Option<&str>, json: bool) -> Result<(), UError> {
     // defensive fallback
     let Some(tool) = tool else {
         return Err(UError::SimpleError(
-            "remote listing requires a tool name: uvman list <tool> --remote"
-                .into(),
+            "remote listing requires a tool name: uvman list <tool> --remote".into(),
         ));
     };
 
@@ -54,8 +53,8 @@ async fn list_remote(tool: Option<&str>, json: bool) -> Result<(), UError> {
 
     if json {
         let value = serde_json::json!({ "tool": tool, "versions": versions });
-        let json = serde_json::to_string_pretty(&value)
-            .map_err(|source| UError::JsonError { source })?;
+        let json =
+            serde_json::to_string_pretty(&value).map_err(|source| UError::JsonError { source })?;
         println!("{json}");
     } else {
         println!("{}", ogreen(format!("{tool}:")));
@@ -84,8 +83,8 @@ fn list_local(tool: Option<&str>, json: bool) -> Result<(), UError> {
             .iter()
             .map(|(name, versions)| serde_json::json!({ "tool": name, "version": versions }))
             .collect();
-        let json = serde_json::to_string_pretty(&value)
-            .map_err(|source| UError::JsonError { source })?;
+        let json =
+            serde_json::to_string_pretty(&value).map_err(|source| UError::JsonError { source })?;
         println!("{json}");
     } else {
         for (name, versions) in &tools {
@@ -101,14 +100,14 @@ fn list_local(tool: Option<&str>, json: bool) -> Result<(), UError> {
 /// Collect every installed tool and its versions from tools/ (sorted by name)
 fn collect_tools() -> Result<Vec<(String, Vec<String>)>, UError> {
     let mut tools = Vec::new();
-    let entries = std::fs::read_dir(tools_dir())
-        .map_err(|source| UError::IoError { source })?;
+    let entries = std::fs::read_dir(tools_dir()).map_err(|source| UError::IoError { source })?;
     for e in entries {
         let e = e?;
         if e.file_type()?.is_dir()
-            && let Some(name) = e.file_name().to_str() {
-                tools.push((name.to_string(), collect_versions(name)?));
-            }
+            && let Some(name) = e.file_name().to_str()
+        {
+            tools.push((name.to_string(), collect_versions(name)?));
+        }
     }
     tools.sort_by(|a, b| a.0.cmp(&b.0));
     Ok(tools)
@@ -121,17 +120,16 @@ fn collect_versions(tool: &str) -> Result<Vec<String>, UError> {
     let mut version = Vec::new();
     let entries = match std::fs::read_dir(tools_dir().join(tool)) {
         Ok(entries) => entries,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(version)
-        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(version),
         Err(e) => return Err(UError::IoError { source: e }),
     };
     for e in entries {
         let e = e?;
         if e.file_type()?.is_dir()
-            && let Some(name) = e.file_name().to_str() {
-                version.push(name.to_string());
-            }
+            && let Some(name) = e.file_name().to_str()
+        {
+            version.push(name.to_string());
+        }
     }
     version.sort_by(|a, b| cmp_versions(a, b));
     Ok(version)

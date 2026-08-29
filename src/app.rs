@@ -15,9 +15,7 @@ pub(crate) fn init() -> Result<()> {
         ));
     }
     if let Err(e) = config::ensure_default_config() {
-        crate::ui::report::print_warning(&format!(
-            "failed to create default config file: {e}"
-        ));
+        crate::ui::report::print_warning(&format!("failed to create default config file: {e}"));
     }
 
     // Initialize the global configuration
