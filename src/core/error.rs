@@ -5,7 +5,8 @@ use thiserror::Error;
 /// Fix suggestion: a one-line message plus commands copyable whole-line.
 ///
 /// Mirrors uv's `hint:` and mise's prompt format:
-/// commands are printed one per line (two-space indent, green highlight) for direct select-copy.
+/// commands are printed one per line (two-space indent, green highlight) for
+/// direct select-copy.
 pub struct Hint {
     /// One-line explanation (may contain backtick-marked fragments)
     pub message: String,
@@ -16,26 +17,18 @@ pub struct Hint {
 /// uvman domain error.
 ///
 /// `Display` outputs user-facing messages; `hint()` returns an optional fix;
-/// `exit_code()` distinguishes usage errors (2) from general errors (1), matching uv.
+/// `exit_code()` distinguishes usage errors (2) from general errors (1),
+/// matching uv.
 #[derive(Error, Debug)]
 pub enum UError {
     /// Plugin already exists (overwrite with --force)
     #[error("plugin '{name}' already exists")]
     PluginAlreadyExists { name: String },
 
-    /// Plugin not installed; similar holds near-miss installed names (did you mean)
+    /// Plugin not installed; similar holds near-miss installed names (did you
+    /// mean)
     #[error("plugin '{name}' is not installed")]
     PluginNotInstalled { name: String, similar: Vec<String> },
-
-    /// Source version is older than the installed one (prevents silent downgrade)
-    #[error(
-        "plugin '{name}' is already at {current}; source version {remote} is older"
-    )]
-    PluginDowngrade { name: String, current: String, remote: String },
-
-    /// No plugin specified to operate on
-    #[error("no plugin specified to upgrade")]
-    MissingPluginTarget,
 
     /// Invalid GitHub repository URL
     #[error("'{url}' is not a valid GitHub repository URL")]
@@ -47,9 +40,7 @@ pub enum UError {
     InvalidUrl { url: String },
 
     /// Invalid plugin name
-    #[error(
-        "invalid plugin name '{name}': only letters, digits, '_' and '-' are allowed"
-    )]
+    #[error("invalid plugin name '{name}': only letters, digits, '_' and '-' are allowed")]
     InvalidPluginName { name: String },
 
     /// Path does not exist
@@ -59,10 +50,6 @@ pub enum UError {
     /// Path is not a file
     #[error("path '{}' is not a file", path.display())]
     NotAFile { path: PathBuf },
-
-    /// Target file already exists
-    #[error("file already exists: {}", path.display())]
-    FileExists { path: PathBuf },
 
     /// Fallback error
     #[error("{0}")]
@@ -101,8 +88,9 @@ pub enum UError {
 
     /// HTTP response status error
     ///
-    /// Do not expose internal download URLs (e.g. the full raw.githubusercontent.com
-    /// address); it does not help self-diagnosis. The exact URL is visible in `--verbose`.
+    /// Do not expose internal download URLs (e.g. the full
+    /// raw.githubusercontent.com address); it does not help self-diagnosis.
+    /// The exact URL is visible in `--verbose`.
     #[error("the remote server returned HTTP {status}")]
     HttpStatusError { url: String, status: u16 },
 
@@ -112,10 +100,7 @@ pub enum UError {
 
     /// Archive extraction failed (tar/zip/gzip/xz)
     #[error("failed to extract {}: {source}", path.display())]
-    ExtractError {
-        path: PathBuf,
-        source: Box<dyn std::error::Error + Send + Sync>,
-    },
+    ExtractError { path: PathBuf, source: Box<dyn std::error::Error + Send + Sync> },
 
     /// Source build failed
     #[error("build failed: {message}")]
@@ -138,23 +123,20 @@ pub enum UError {
 impl UError {
     /// Fix suggestion: a one-line message plus whole-line-copyable commands.
     ///
-    /// Only given when the error alone cannot suggest the next step (uv's hint principle).
+    /// Only given when the error alone cannot suggest the next step (uv's hint
+    /// principle).
     pub fn hint(&self) -> Option<Hint> {
         let hint = match self {
             Self::PluginAlreadyExists { name } => Hint {
                 message: "to overwrite the existing plugin, run:".into(),
-                commands: vec![format!(
-                    "uvman plugin install {name} --force"
-                )],
+                commands: vec![format!("uvman plugin install {name} --force")],
             },
             Self::PluginNotInstalled { name, similar } => {
                 if let Some(first) = similar.first() {
                     let more = similar.len().saturating_sub(1);
                     Hint {
                         message: if more > 0 {
-                            format!(
-                                "did you mean '{first}'? ({more} more similar name(s) found)"
-                            )
+                            format!("did you mean '{first}'? ({more} more similar name(s) found)")
                         } else {
                             format!("did you mean '{first}'?")
                         },
@@ -163,33 +145,16 @@ impl UError {
                 } else {
                     Hint {
                         message: "to install it, run:".into(),
-                        commands: vec![format!(
-                            "uvman plugin install {name}"
-                        )],
+                        commands: vec![format!("uvman plugin install {name}")],
                     }
                 }
-            }
-            Self::MissingPluginTarget => Hint {
-                message: "specify a plugin name, or upgrade all installed plugins:".into(),
-                commands: vec!["uvman plugin upgrade --all".into()],
-            },
-            Self::PluginDowngrade { name, .. } => Hint {
-                message: "upgrade does not downgrade; to overwrite the installed plugin, run:"
-                    .into(),
-                commands: vec![format!("uvman plugin install {name} --force")],
             },
             Self::InvalidGitHubUrl { .. } => Hint {
                 message: "the repository URL must look like:".into(),
                 commands: vec!["https://github.com/<owner>/<repo>".into()],
             },
             Self::InvalidUrl { url } => Hint {
-                message: format!(
-                    "'{url}' is missing a scheme (e.g. `https://`) or is malformed"
-                ),
-                commands: vec![],
-            },
-            Self::FileExists { .. } => Hint {
-                message: "choose another name, or remove the existing file first".into(),
+                message: format!("'{url}' is missing a scheme (e.g. `https://`) or is malformed"),
                 commands: vec![],
             },
             Self::VersionNotFound { tool, .. } => Hint {
@@ -203,10 +168,13 @@ impl UError {
                 message: "to reinstall and overwrite the existing files, run:".into(),
                 commands: vec![format!("uvman install {tool}@{version} --force")],
             },
-            // Any network failure points to proxy config (GitHub domains need it on some networks)
+            // Any network failure points at the config proxy (GitHub domains need it on some
+            // networks)
             Self::NetworkError { .. } | Self::ProxyError { .. } => Hint {
-                message: "check your network, or sync the index through a proxy:".into(),
-                commands: vec!["uvman plugin sync --proxy <proxy-url>".into()],
+                message: "check your network, or set `[plugin] proxy` / `[network] proxy` \
+                          in config/uvman.toml"
+                    .into(),
+                commands: vec![],
             },
             Self::HttpStatusError { status, .. } => match status {
                 404 => Hint {
@@ -229,28 +197,30 @@ impl UError {
                 if source.kind() == std::io::ErrorKind::PermissionDenied =>
             {
                 Hint {
-                    message: "permission denied; check the file/folder ownership and access rights".into(),
+                    message: "permission denied; check the file/folder ownership and access rights"
+                        .into(),
                     commands: vec![],
                 }
-            }
+            },
             Self::FileError { source, .. }
                 if source.kind() == std::io::ErrorKind::PermissionDenied =>
             {
                 Hint {
-                    message: "permission denied; check the file/folder ownership and access rights".into(),
+                    message: "permission denied; check the file/folder ownership and access rights"
+                        .into(),
                     commands: vec![],
                 }
-            }
+            },
             _ => return None,
         };
         Some(hint)
     }
 
-    /// Process exit code: usage/input errors are 2 (matching uv, clap), others 1
+    /// Process exit code: usage/input errors are 2 (matching uv, clap), others
+    /// 1
     pub fn exit_code(&self) -> u8 {
         match self {
-            Self::MissingPluginTarget
-            | Self::InvalidPluginName { .. }
+            Self::InvalidPluginName { .. }
             | Self::InvalidUrl { .. }
             | Self::InvalidGitHubUrl { .. }
             | Self::PathNotFound { .. }
@@ -259,7 +229,8 @@ impl UError {
         }
     }
 
-    /// Whether this error carries an underlying source (decides showing the --verbose footer)
+    /// Whether this error carries an underlying source (decides showing the
+    /// --verbose footer)
     pub fn has_source(&self) -> bool {
         matches!(
             self,

@@ -15,8 +15,7 @@ fn main() -> std::process::ExitCode {
     match result {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(report) => {
-            let want_debug = std::env::var_os("RUST_BACKTRACE")
-                .is_some_and(|v| v != "0")
+            let want_debug = std::env::var_os("RUST_BACKTRACE").is_some_and(|v| v != "0")
                 || ui::report::verbose() > 0;
             // Print user-readable info by default; --verbose / RUST_BACKTRACE
             // emit the full debug report.

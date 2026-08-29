@@ -1,8 +1,10 @@
-//! Target shell rendering strategy (design in .tmp/dev-docs/uvman-env-design.md).
+//! Target shell rendering strategy (design in
+//! .tmp/dev-docs/uvman-env-design.md).
 //!
 //! Renders platform-neutral key-values into statements each shell can evaluate
-//! directly, and generates the activate script (design in uvman-activate-design.md).
-//! Stateless, no IO; detection (detect) only reads environment variables.
+//! directly, and generates the activate script (design in
+//! uvman-activate-design.md). Stateless, no IO; detection (detect) only reads
+//! environment variables.
 
 use std::path::Path;
 
@@ -33,11 +35,7 @@ impl Shell {
     /// Unix: $SHELL basename, unknowns (dash/sh etc.) normalize to Bash.
     pub fn detect() -> Shell {
         if cfg!(windows) {
-            if std::env::var_os("PSModulePath").is_some() {
-                Shell::PowerShell
-            } else {
-                Shell::Cmd
-            }
+            if std::env::var_os("PSModulePath").is_some() { Shell::PowerShell } else { Shell::Cmd }
         } else {
             match std::env::var("SHELL") {
                 Ok(s) => match s.rsplit('/').next().unwrap_or_default() {
@@ -56,22 +54,23 @@ impl Shell {
         match self {
             Shell::Bash | Shell::Zsh => {
                 format!("export {key}={}", sh_quote(value))
-            }
+            },
             Shell::Fish => {
                 format!("set -gx {key} {}", sh_quote(value))
-            }
+            },
             Shell::PowerShell => {
                 format!("$env:{key} = '{}'", value.replace('\'', "''"))
-            }
+            },
             Shell::Cmd => {
                 // Quoted form avoids trailing-space and special char (&) issues
                 format!("set \"{key}={value}\"")
-            }
+            },
         }
     }
 
-    /// Render a PATH prepend statement (uvman entries take priority over system versions).
-    /// References to existing PATH ($PATH etc.) are expanded by each shell, not escaped here.
+    /// Render a PATH prepend statement (uvman entries take priority over system
+    /// versions). References to existing PATH ($PATH etc.) are expanded by
+    /// each shell, not escaped here.
     pub fn prepend_path(&self, entries: &[String]) -> String {
         if entries.is_empty() {
             return String::new();
@@ -79,39 +78,38 @@ impl Shell {
         match self {
             Shell::Bash | Shell::Zsh => {
                 format!("export PATH=\"{}:$PATH\"", sh_escape(&entries.join(":")))
-            }
+            },
             Shell::Fish => {
                 // fish PATH is a list: each element quoted independently, spaces safe
-                let items: Vec<String> =
-                    entries.iter().map(|e| sh_quote(e)).collect();
+                let items: Vec<String> = entries.iter().map(|e| sh_quote(e)).collect();
                 format!("set -gx PATH {} $PATH", items.join(" "))
-            }
+            },
             Shell::PowerShell => {
                 let sep = self.path_sep();
                 let joined = entries.join(&sep.to_string());
                 format!("$env:PATH = '{joined}{sep}' + $env:PATH")
-            }
+            },
             Shell::Cmd => {
                 let sep = self.path_sep();
                 let joined = entries.join(&sep.to_string());
                 format!("set \"PATH={joined}{sep}%PATH%\"")
-            }
+            },
         }
     }
 
-    /// Refresh hint after a successful `use` (copyable commands for the detected shell)
+    /// Refresh hint after a successful `use` (copyable commands for the
+    /// detected shell)
     pub fn inject_hint(&self) -> Vec<String> {
         match self {
             Shell::Bash | Shell::Zsh => {
                 vec!["eval \"$(uvman env)\"".to_string()]
-            }
+            },
             Shell::Fish => vec!["uvman env | source".to_string()],
             Shell::PowerShell => vec!["uvman env | iex".to_string()],
             Shell::Cmd => {
                 // for /f runs output line-by-line; interactive uses %i (%%i only inside a .bat)
-                vec!["for /f \"delims=\" %i in ('uvman env --shell cmd') do %i"
-                    .to_string()]
-            }
+                vec!["for /f \"delims=\" %i in ('uvman env --shell cmd') do %i".to_string()]
+            },
         }
     }
 
@@ -126,12 +124,12 @@ impl Shell {
                 } else {
                     ':'
                 }
-            }
+            },
         }
     }
 
-    /// Path style: POSIX family always uses / (Git Bash accepts E:/x and avoids \ ambiguity);
-    /// pwsh/cmd follow the native OS
+    /// Path style: POSIX family always uses / (Git Bash accepts E:/x and avoids
+    /// \ ambiguity); pwsh/cmd follow the native OS
     pub fn fmt_path(&self, path: &Path) -> String {
         let s = path.to_string_lossy();
         match self {
@@ -147,7 +145,7 @@ impl Shell {
             Shell::Fish => format!("set -e {key}"),
             Shell::PowerShell => {
                 format!("Remove-Item Env:{key} -ErrorAction SilentlyContinue")
-            }
+            },
             Shell::Cmd => format!("set \"{key}=\""),
         }
     }
@@ -167,10 +165,11 @@ impl Shell {
             Shell::Zsh => render(ZSH_TMPL),
             Shell::Fish => render(FISH_TMPL),
             Shell::PowerShell => render(PWSH_TMPL),
-            // cmd has no prompt hook; the activate command layer intercepts and explains alternatives
+            // cmd has no prompt hook; the activate command layer intercepts and explains
+            // alternatives
             Shell::Cmd => {
                 return Err("cmd has no prompt hook".to_string());
-            }
+            },
         };
         Ok(script)
     }
@@ -296,13 +295,10 @@ if (-not $global:__uvman_orig_prompt) {
 __uvman_hook
 "#;
 
-/// POSIX double-quote escaping (\ " $ `), so values are not re-expanded at eval time
+/// POSIX double-quote escaping (\ " $ `), so values are not re-expanded at eval
+/// time
 fn sh_escape(value: &str) -> String {
-    value
-        .replace('\\', "\\\\")
-        .replace('"', "\\\"")
-        .replace('$', "\\$")
-        .replace('`', "\\`")
+    value.replace('\\', "\\\\").replace('"', "\\\"").replace('$', "\\$").replace('`', "\\`")
 }
 
 fn sh_quote(value: &str) -> String {
@@ -311,62 +307,39 @@ fn sh_quote(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::path::Path;
+
+    use super::*;
 
     #[test]
     fn test_set_var_all_shells() {
-        assert_eq!(
-            Shell::Bash.set_var("K", "1.0"),
-            "export K=\"1.0\""
-        );
-        assert_eq!(
-            Shell::Fish.set_var("K", "1.0"),
-            "set -gx K \"1.0\""
-        );
-        assert_eq!(
-            Shell::PowerShell.set_var("K", "1.0"),
-            "$env:K = '1.0'"
-        );
+        assert_eq!(Shell::Bash.set_var("K", "1.0"), "export K=\"1.0\"");
+        assert_eq!(Shell::Fish.set_var("K", "1.0"), "set -gx K \"1.0\"");
+        assert_eq!(Shell::PowerShell.set_var("K", "1.0"), "$env:K = '1.0'");
         assert_eq!(Shell::Cmd.set_var("K", "1.0"), "set \"K=1.0\"");
     }
 
     #[test]
     fn test_pwsh_single_quote_escaped() {
-        assert_eq!(
-            Shell::PowerShell.set_var("K", "a'b"),
-            "$env:K = 'a''b'"
-        );
+        assert_eq!(Shell::PowerShell.set_var("K", "a'b"), "$env:K = 'a''b'");
     }
 
     #[test]
     fn test_posix_expansions_escaped() {
-        assert_eq!(
-            Shell::Bash.set_var("K", "a$b`c\"d"),
-            "export K=\"a\\$b\\`c\\\"d\""
-        );
+        assert_eq!(Shell::Bash.set_var("K", "a$b`c\"d"), "export K=\"a\\$b\\`c\\\"d\"");
     }
 
     #[test]
     fn test_prepend_path_all_shells() {
         let entries = vec!["E:/x".to_string(), "E:/x/bin".to_string()];
-        assert_eq!(
-            Shell::Bash.prepend_path(&entries),
-            "export PATH=\"E:/x:E:/x/bin:$PATH\""
-        );
-        assert_eq!(
-            Shell::Fish.prepend_path(&entries),
-            "set -gx PATH \"E:/x\" \"E:/x/bin\" $PATH"
-        );
+        assert_eq!(Shell::Bash.prepend_path(&entries), "export PATH=\"E:/x:E:/x/bin:$PATH\"");
+        assert_eq!(Shell::Fish.prepend_path(&entries), "set -gx PATH \"E:/x\" \"E:/x/bin\" $PATH");
         if cfg!(windows) {
             assert_eq!(
                 Shell::PowerShell.prepend_path(&entries),
                 "$env:PATH = 'E:/x;E:/x/bin;' + $env:PATH"
             );
-            assert_eq!(
-                Shell::Cmd.prepend_path(&entries),
-                "set \"PATH=E:/x;E:/x/bin;%PATH%\""
-            );
+            assert_eq!(Shell::Cmd.prepend_path(&entries), "set \"PATH=E:/x;E:/x/bin;%PATH%\"");
         }
     }
 
@@ -396,13 +369,7 @@ mod tests {
 
     #[test]
     fn test_inject_hint_nonempty() {
-        for shell in [
-            Shell::Bash,
-            Shell::Zsh,
-            Shell::Fish,
-            Shell::PowerShell,
-            Shell::Cmd,
-        ] {
+        for shell in [Shell::Bash, Shell::Zsh, Shell::Fish, Shell::PowerShell, Shell::Cmd] {
             assert!(!shell.inject_hint().is_empty(), "{shell:?}");
         }
     }

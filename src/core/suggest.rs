@@ -1,8 +1,11 @@
-//! "did you mean" similarity suggestions (spell-correction design from mise/uv).
+//! "did you mean" similarity suggestions (spell-correction design from
+//! mise/uv).
 
-/// Damerau-Levenshtein distance (OSA variant; supports adjacent transpositions, case-insensitive).
+/// Damerau-Levenshtein distance (OSA variant; supports adjacent transpositions,
+/// case-insensitive).
 ///
-/// Unlike plain Levenshtein, recognizes frequent transposition typos like "mkae"→"make".
+/// Unlike plain Levenshtein, recognizes frequent transposition typos like
+/// "mkae"→"make".
 fn damerau_levenshtein(a: &str, b: &str) -> usize {
     let a: Vec<char> = a.to_lowercase().chars().collect();
     let b: Vec<char> = b.to_lowercase().chars().collect();
@@ -23,8 +26,7 @@ fn damerau_levenshtein(a: &str, b: &str) -> usize {
         curr[0] = i;
         for j in 1..=m {
             let cost = usize::from(a[i - 1] != b[j - 1]);
-            curr[j] =
-                (prev[j] + 1).min(curr[j - 1] + 1).min(prev[j - 1] + cost);
+            curr[j] = (prev[j] + 1).min(curr[j - 1] + 1).min(prev[j - 1] + cost);
             // adjacent transposition: a[i-2..i] is the reverse of b[j-2..j]
             if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
                 curr[j] = curr[j].min(prev2[j - 2] + 1);
@@ -36,11 +38,13 @@ fn damerau_levenshtein(a: &str, b: &str) -> usize {
     prev[m]
 }
 
-/// Find names in candidates most similar to input, returning up to 3 ascending by distance.
+/// Find names in candidates most similar to input, returning up to 3 ascending
+/// by distance.
 ///
-/// Threshold is `max(1, len/3)`: very short input (e.g. "no") allows only 1 edit,
-/// avoiding absurd suggestions. When no edit-distance hit, fall back to first-segment prefix
-/// match (e.g. "no-such" → "node") to cover hyphenated spelling drift.
+/// Threshold is `max(1, len/3)`: very short input (e.g. "no") allows only 1
+/// edit, avoiding absurd suggestions. When no edit-distance hit, fall back to
+/// first-segment prefix match (e.g. "no-such" → "node") to cover hyphenated
+/// spelling drift.
 pub fn did_you_mean(input: &str, candidates: &[String]) -> Vec<String> {
     let threshold = (input.len() / 3).max(1);
     let mut scored: Vec<(usize, String)> = candidates
@@ -58,11 +62,8 @@ pub fn did_you_mean(input: &str, candidates: &[String]) -> Vec<String> {
     let first_token = input.split('-').next().unwrap_or_default();
     if first_token.len() >= 2 {
         let prefix = first_token.to_lowercase();
-        let mut matched: Vec<String> = candidates
-            .iter()
-            .filter(|c| c.to_lowercase().starts_with(&prefix))
-            .cloned()
-            .collect();
+        let mut matched: Vec<String> =
+            candidates.iter().filter(|c| c.to_lowercase().starts_with(&prefix)).cloned().collect();
         matched.sort();
         matched.truncate(3);
         return matched;
@@ -75,10 +76,7 @@ mod tests {
     use super::*;
 
     fn candidates() -> Vec<String> {
-        ["node", "npm", "make", "cmake", "go", "rust"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect()
+        ["node", "npm", "make", "cmake", "go", "rust"].iter().map(|s| s.to_string()).collect()
     }
 
     #[test]

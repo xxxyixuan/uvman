@@ -1,8 +1,5 @@
 #![allow(dead_code)] // Semantic color helpers; some are not yet used but kept for the UI layer
-#![cfg_attr(
-    debug_assertions,
-    allow(unused_imports, unused_variables, unused_mut)
-)]
+#![cfg_attr(debug_assertions, allow(unused_imports, unused_variables, unused_mut))]
 
 use console::{StyledObject, style};
 

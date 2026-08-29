@@ -34,13 +34,7 @@ impl Install {
             .into());
         }
 
-        println!(
-            "{}",
-            style::ogreen(format!(
-                "Installing {}@{} ...",
-                plan.name, plan.version
-            ))
-        );
+        println!("{}", style::ogreen(format!("Installing {}@{} ...", plan.name, plan.version)));
 
         // --force: rename the old dir to a backup rather than deleting it inline, so
         // a failed install can roll back instead of leaving nothing behind
@@ -102,12 +96,9 @@ pub(crate) fn parse_spec(spec: &str) -> Result<(String, Option<String>), UError>
         None => (spec, ""),
     };
     if tool.is_empty() {
-        return Err(UError::SimpleError(format!(
-            "invalid tool spec '{spec}': missing tool name"
-        )));
+        return Err(UError::SimpleError(format!("invalid tool spec '{spec}': missing tool name")));
     }
-    let version =
-        if version.is_empty() { None } else { Some(version.to_string()) };
+    let version = if version.is_empty() { None } else { Some(version.to_string()) };
     Ok((tool.to_string(), version))
 }
 

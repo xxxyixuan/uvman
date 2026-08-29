@@ -9,9 +9,6 @@ use crate::core::error::UError;
 pub struct ToolPlugin {
     pub tool: ToolMeta,
 
-    #[serde(default)]
-    pub aliases: HashMap<String, String>,
-
     pub registry: Registry,
 
     pub release: Release,
@@ -23,17 +20,14 @@ pub struct ToolPlugin {
 
 impl ToolPlugin {
     pub fn load_from(path: &Path) -> Result<ToolPlugin, UError> {
-        let content = std::fs::read_to_string(path).map_err(|source| {
-            UError::FileError { path: path.to_path_buf(), source }
-        })?;
-        toml::from_str(&content).map_err(|source| UError::TomlError {
-            path: path.to_path_buf(),
-            source,
-        })
+        let content = std::fs::read_to_string(path)
+            .map_err(|source| UError::FileError { path: path.to_path_buf(), source })?;
+        toml::from_str(&content)
+            .map_err(|source| UError::TomlError { path: path.to_path_buf(), source })
     }
 
-    /// Map system OS/ARCH constants via platform.os_map / arch_map to download tokens
-    /// (e.g. windows -> win, x86_64 -> x64)
+    /// Map system OS/ARCH constants via platform.os_map / arch_map to download
+    /// tokens (e.g. windows -> win, x86_64 -> x64)
     pub fn resolve_platform(&self) -> Result<(String, String), UError> {
         let sys_os = crate::core::platform::OS.as_str();
         let sys_arch = crate::core::platform::ARCH.as_str();
@@ -46,24 +40,17 @@ impl ToolPlugin {
         };
 
         let os = platform.os_map.get(sys_os).cloned().ok_or_else(|| {
-            UError::PlatformNotSupported {
-                os: sys_os.to_string(),
-                arch: sys_arch.to_string(),
-            }
+            UError::PlatformNotSupported { os: sys_os.to_string(), arch: sys_arch.to_string() }
         })?;
-        let arch =
-            platform.arch_map.get(sys_arch).cloned().ok_or_else(|| {
-                UError::PlatformNotSupported {
-                    os: os.clone(),
-                    arch: sys_arch.to_string(),
-                }
-            })?;
+        let arch = platform.arch_map.get(sys_arch).cloned().ok_or_else(|| {
+            UError::PlatformNotSupported { os: os.clone(), arch: sys_arch.to_string() }
+        })?;
 
         Ok((os, arch))
     }
 
-    /// Replace {key} placeholders in link/path templates (download.path, hash.path, etc.)
-    /// with real values; missing ones are left as-is
+    /// Replace {key} placeholders in link/path templates (download.path,
+    /// hash.path, etc.) with real values; missing ones are left as-is
     pub fn render(&self, template: &str, vars: &HashMap<&str, &str>) -> String {
         let mut result = template.to_string();
         for (key, value) in vars {
@@ -79,14 +66,10 @@ pub struct ToolMeta {
     #[serde(default)]
     pub description: Option<String>,
 
-    #[serde(default)]
-    pub homepage: Option<String>,
-
+    /// Plugin's own version (displayed by `plugin info`; consumed by the
+    /// deferred `plugin upgrade`, see .tmp/feat design doc)
     #[serde(default)]
     pub version: Option<String>,
-
-    #[serde(default)]
-    pub license: Option<String>,
 
     #[serde(default)]
     pub author: Option<Vec<String>>,
@@ -107,7 +90,8 @@ impl Registry {
     }
 }
 
-/// Version release source; the `source` field selects the variant (internal tag; TOML always has `source`):
+/// Version release source; the `source` field selects the variant (internal
+/// tag; TOML always has `source`):
 ///
 /// ```toml
 /// [release]                    # api: fetch JSON from url,
@@ -148,15 +132,12 @@ pub struct Install {
 
     #[serde(default)]
     pub bin: Option<Vec<InstallBin>>,
-
-    #[serde(default)]
-    pub src: Option<Vec<InstallSrc>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstallDefaults {
+    /// Version installed when the user omits one (`uvman install node`)
     pub version: String,
-    pub mode: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -193,16 +174,13 @@ pub struct ExtractConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeployConfig {
     pub bin_dir: PerOs<String>,
-    #[serde(default)]
-    pub copy_extra: Option<Vec<String>>,
-    pub post_install: Option<HashMap<String, Vec<String>>>,
 }
 
 /// Per-OS value: a plain value applies to all OS, or an explicit OS mapping.
 ///
-/// Different OS releases of the same tool may differ in layout (e.g. Node's Windows zip
-/// keeps the binary at the root, linux/macos tarballs under bin/), so deploy fields
-/// need the same per-OS expressiveness as ext/post_install.
+/// Different OS releases of the same tool may differ in layout (e.g. Node's
+/// Windows zip keeps the binary at the root, linux/macos tarballs under bin/),
+/// so deploy fields need the same per-OS expressiveness as ext/post_install.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
 pub enum PerOs<T> {
@@ -213,8 +191,9 @@ pub enum PerOs<T> {
 }
 
 impl<T> PerOs<T> {
-    /// Resolve the value for the current OS; ByOs errors clearly if that OS is missing
-    /// (rather than silently falling back, so layout mistakes surface before install)
+    /// Resolve the value for the current OS; ByOs errors clearly if that OS is
+    /// missing (rather than silently falling back, so layout mistakes
+    /// surface before install)
     pub fn resolve(&self, os: &str) -> Result<&T, UError> {
         match self {
             PerOs::All(v) => Ok(v),
@@ -227,30 +206,6 @@ impl<T> PerOs<T> {
             }),
         }
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct InstallSrc {
-    pub os: Vec<String>,
-    pub arch: Vec<String>,
-    pub dependencies: InstallSrcDependencies,
-    pub download: DownloadConfig,
-    pub extract: ExtractConfig,
-    pub build: InstallSrcBuild,
-    pub deploy: DeployConfig,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct InstallSrcDependencies {
-    pub tools: HashMap<String, Vec<String>>,
-    pub system_libs: HashMap<String, Vec<String>>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct InstallSrcBuild {
-    #[serde(default)]
-    pub env: HashMap<String, String>,
-    pub command: HashMap<String, Vec<String>>,
 }
 
 #[cfg(test)]
@@ -311,7 +266,6 @@ arch_map = { x86_64 = "x64", aarch64 = "arm64" }
 
 [install.defaults]
 version = "latest"
-mode = "bin"
 
 [[install.bin]]
 os = ["windows", "linux", "macos"]
@@ -357,10 +311,7 @@ bin_dir = { windows = "", linux = "bin", macos = "bin" }
         let platform = plugin.platform.as_ref().unwrap();
         // Mapped result must match the system constants' targets in os_map/arch_map
         assert_eq!(os, platform.os_map[crate::core::platform::OS.as_str()]);
-        assert_eq!(
-            arch,
-            platform.arch_map[crate::core::platform::ARCH.as_str()]
-        );
+        assert_eq!(arch, platform.arch_map[crate::core::platform::ARCH.as_str()]);
 
         let mut vars: HashMap<&str, &str> = HashMap::new();
         vars.insert("registry", plugin.registry.default.as_str());
@@ -405,15 +356,13 @@ bin_dir = { windows = "", linux = "bin", macos = "bin" }
         .unwrap();
         match fixed {
             Release::Static { versions } => {
-                assert_eq!(
-                    versions,
-                    vec!["1.0.0".to_string(), "1.1.0".to_string()]
-                );
+                assert_eq!(versions, vec!["1.0.0".to_string(), "1.1.0".to_string()]);
             },
             other => panic!("应解析为 Static 变体，实际 {other:?}"),
         }
 
-        // An unknown source must error (the original design silently passed, hiding config errors)
+        // An unknown source must error (the original design silently passed, hiding
+        // config errors)
         assert!(toml::from_str::<Release>(r#"source = "unknown""#).is_err());
     }
 
