@@ -239,7 +239,10 @@ fn installed_desc(name: &str) -> Vec<String> {
 
 /// Interactive scroll view (alternate screen) for listings longer than the
 /// pager threshold. Falls back to a plain full print when the terminal can't
-/// be set up. Keys: ↑/↓/j/k, PgUp/PgDn, Home/End/g/G, q/Esc/Ctrl-C to quit.
+/// be set up.
+///
+/// Keys: ↑/↓/j/k line scroll, ←/→ page, Home/End/g/G jump, `/` search
+/// (Enter jumps to the match, `n` next match), q/Esc/Ctrl-C to quit.
 fn show_pager(lines: &[String]) -> io::Result<()> {
     terminal::enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -252,47 +255,180 @@ fn show_pager(lines: &[String]) -> io::Result<()> {
 }
 
 fn pager_loop(stdout: &mut io::Stdout, lines: &[String]) -> io::Result<()> {
+    // Visible chars per line (SGR sequences stripped); the search corpus
+    let plain: Vec<String> =
+        lines.iter().map(|l| console::strip_ansi_codes(l).to_string()).collect();
+
     let mut offset = 0usize;
+    // Search input being typed (Some = input mode)
+    let mut query: Option<String> = None;
+    // Confirmed search term (for `n`, next match)
+    let mut needle: Option<String> = None;
+    // Line index of the last jumped-to match
+    let mut last_match: Option<usize> = None;
+    // Transient footer message (e.g. "not found: x"); cleared on next key
+    let mut message: Option<String> = None;
+
     stdout.execute(Hide)?;
     loop {
         let (cols, rows) = terminal::size().unwrap_or((80, 24));
-        // One row stays reserved for the position/key footer
+        // One row stays reserved for the status/key footer
         let viewport = ((rows as usize).saturating_sub(1)).min(lines.len()).max(1);
         offset = clamp_offset(offset, lines.len(), viewport);
+
+        // Live highlight: the query being typed wins over the confirmed term
+        let active: Option<String> =
+            query.clone().filter(|q| !q.is_empty()).or_else(|| needle.clone());
 
         // Redraw the whole viewport; \r\n because raw mode doesn't translate
         // \n, and a trailing reset guards against truncation cutting a color
         // sequence mid-way
         stdout.queue(MoveTo(0, 0))?;
-        for line in &lines[offset..offset + viewport] {
-            let fitted = console::pad_str(line, cols as usize, console::Alignment::Left, None);
+        for (row, line) in lines[offset..offset + viewport].iter().enumerate() {
+            let rendered = match &active {
+                Some(term) => highlight_line(line, &plain[offset + row], &term.to_lowercase()),
+                None => line.clone(),
+            };
+            let fitted = console::pad_str(&rendered, cols as usize, console::Alignment::Left, None);
             write!(stdout, "{fitted}\x1b[0m\r\n")?;
         }
-        let total = lines.len();
-        let (start, end) = (offset + 1, offset + viewport.min(total - offset));
-        let footer =
-            odim(format!("{start}-{end}/{total} lines · ↑↓ scroll · PgUp/PgDn page · q quit",));
+        let footer = match (&query, &message) {
+            (Some(q), _) => odim(format!("/{q}▏ · Enter jump · Esc cancel")),
+            (None, Some(msg)) => odim(msg.clone()),
+            (None, None) => {
+                let total = lines.len();
+                let (start, end) = (offset + 1, offset + viewport.min(total - offset));
+                odim(format!("{start}-{end}/{total} lines · / search · n next · ←→ page · q quit"))
+            },
+        };
         write!(stdout, "{footer}\x1b[0m")?;
         stdout.queue(Clear(ClearType::FromCursorDown))?;
         stdout.flush()?;
 
-        // Offsets mutated here are clamped at the top of the next frame
-        match event::read()? {
-            Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
+        // Offsets mutated below are clamped at the top of the next frame
+        let Event::Key(key) = event::read()? else { continue };
+        if key.kind != KeyEventKind::Press {
+            continue;
+        }
+        // Ctrl-C quits from any mode
+        if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            break;
+        }
+        message = None;
+
+        match query.take() {
+            // ---- search input mode ----
+            Some(mut q) => match key.code {
+                KeyCode::Enter => {
+                    if q.is_empty() {
+                        continue;
+                    }
+                    // First match after the viewport top, wrapping to the top
+                    match find_match(&plain, &q, offset + 1) {
+                        Some(i) => {
+                            needle = Some(q);
+                            last_match = Some(i);
+                            // Jump only when the match isn't already on screen
+                            if i < offset || i >= offset + viewport {
+                                offset = i;
+                            }
+                        },
+                        None => message = Some(format!("not found: {q}")),
+                    }
+                },
+                KeyCode::Esc => {}, // cancel; query stays dropped
+                KeyCode::Backspace => {
+                    q.pop();
+                    query = Some(q);
+                },
+                KeyCode::Char(c) => {
+                    q.push(c);
+                    query = Some(q);
+                },
+                _ => query = Some(q), // other keys don't disturb the input
+            },
+            // ---- normal mode ----
+            None => match key.code {
                 KeyCode::Char('q') | KeyCode::Esc => break,
-                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break,
+                KeyCode::Char('/') => query = Some(String::new()),
+                KeyCode::Char('n') => match &needle {
+                    Some(term) => {
+                        // Next match after the last one, wrapping to the top
+                        let origin = last_match.map_or(0, |m| m + 1);
+                        match find_match(&plain, term, origin) {
+                            Some(i) => {
+                                last_match = Some(i);
+                                if i < offset || i >= offset + viewport {
+                                    offset = i;
+                                }
+                            },
+                            None => message = Some(format!("not found: {term}")),
+                        }
+                    },
+                    None => message = Some("no search yet — press /".into()),
+                },
                 KeyCode::Down | KeyCode::Char('j') => offset += 1,
                 KeyCode::Up | KeyCode::Char('k') => offset = offset.saturating_sub(1),
-                KeyCode::PageDown => offset += viewport,
-                KeyCode::PageUp => offset = offset.saturating_sub(viewport),
+                KeyCode::Right => offset += viewport,
+                KeyCode::Left => offset = offset.saturating_sub(viewport),
                 KeyCode::Home | KeyCode::Char('g') => offset = 0,
                 KeyCode::End | KeyCode::Char('G') => offset = usize::MAX,
                 _ => {},
             },
-            _ => {},
         }
     }
     Ok(())
+}
+
+/// First line at/after `start` (wrapping to the top) whose plain text
+/// contains `term` case-insensitively; None when nothing matches
+fn find_match(plain: &[String], term: &str, start: usize) -> Option<usize> {
+    if plain.is_empty() || term.is_empty() {
+        return None;
+    }
+    let term = term.to_lowercase();
+    (0..plain.len())
+        .map(|i| (i + start) % plain.len())
+        .find(|&i| plain[i].to_lowercase().contains(&term))
+}
+
+/// Wrap the first case-insensitive occurrence of `needle_lower` in `plain`
+/// with reverse video, spliced into the styled line at the matching position.
+/// Both strings share the same visible chars; SGR sequences only occupy extra
+/// chars in the styled form, so each plain char's styled index is recorded
+/// while walking the styled string once. Version lines are ASCII, so byte
+/// offsets from the lowercase search map 1:1 to char positions.
+fn highlight_line(styled: &str, plain: &str, needle_lower: &str) -> String {
+    let Some(byte_pos) = plain.to_lowercase().find(needle_lower) else {
+        return styled.to_string();
+    };
+    let start = plain[..byte_pos].chars().count();
+    let len = needle_lower.chars().count();
+
+    let styled_chars: Vec<char> = styled.chars().collect();
+    // styled index of each plain char (escape sequences contribute none)
+    let mut map = Vec::with_capacity(plain.chars().count());
+    let mut in_escape = false;
+    for (idx, c) in styled_chars.iter().enumerate() {
+        match c {
+            '\x1b' => in_escape = true,
+            'm' if in_escape => in_escape = false,
+            _ if in_escape => {},
+            _ => map.push(idx),
+        }
+    }
+    if start + len > map.len() {
+        return styled.to_string();
+    }
+    // SGR 7/27 toggles reverse video without disturbing the line's own color
+    let s = map[start];
+    let m = map[start + len - 1] + 1;
+    let out: String = styled_chars[..s].iter().collect::<String>()
+        + "\x1b[7m"
+        + &styled_chars[s..m].iter().collect::<String>()
+        + "\x1b[27m"
+        + &styled_chars[m..].iter().collect::<String>();
+    out
 }
 
 /// Clamp a scroll offset so the viewport stays inside the line list
@@ -546,6 +682,35 @@ mod tests {
         assert_eq!(clamp_offset(5, 60, 20), 5);
         // Deep offsets stop at the last full page (End key relies on this)
         assert_eq!(clamp_offset(usize::MAX, 60, 20), 40);
+    }
+
+    #[test]
+    fn test_find_match_wraps_and_case_insensitive() {
+        let plain: Vec<String> = [" - v26.8.1", " - v24.20.0 (lts: Krypton)", " - v20.19.2"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        // Case-insensitive codename search
+        assert_eq!(find_match(&plain, "krypton", 0), Some(1));
+        // Searching from after the match wraps back to the top
+        assert_eq!(find_match(&plain, "26.8", 1), Some(0));
+        // No match anywhere / empty term / empty corpus
+        assert_eq!(find_match(&plain, "18.", 0), None);
+        assert_eq!(find_match(&plain, "", 0), None);
+        assert_eq!(find_match(&[], "x", 0), None);
+    }
+
+    #[test]
+    fn test_highlight_line_splices_reverse_video() {
+        let styled = "\x1b[32m - \x1b[0mv20.19.2 (current)";
+        let plain = " - v20.19.2 (current)";
+        // The match is wrapped in reverse video inside the styled string,
+        // leaving the line's own color sequences intact
+        let out = highlight_line(styled, plain, "19.2");
+        assert_eq!(out, "\x1b[32m - \x1b[0mv20.\x1b[7m19.2\x1b[27m (current)");
+
+        // No occurrence: the line passes through untouched
+        assert_eq!(highlight_line(styled, plain, "18."), styled);
     }
 
     #[test]
