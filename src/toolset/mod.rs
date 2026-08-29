@@ -1166,7 +1166,7 @@ fn extract_hash(text: &str, pattern: Option<&str>, filename: &str) -> Result<Str
 }
 
 /// Compute the archive checksum
-fn compute_checksum(path: &Path, algorithm: &str) -> Result<String, UError> {
+pub(crate) fn compute_checksum(path: &Path, algorithm: &str) -> Result<String, UError> {
     use sha2::{Sha256, Sha512};
     let file = fs::File::open(path)
         .map_err(|source| UError::FileError { path: path.to_path_buf(), source })?;
@@ -1211,7 +1211,7 @@ fn url_basename(url: &str) -> String {
 
 /// Extract the archive to dest by extension, stripping the first `strip`
 /// top-level dirs
-fn extract_archive(archive: &Path, dest: &Path, ext: &str, strip: u32) -> Result<(), UError> {
+pub(crate) fn extract_archive(archive: &Path, dest: &Path, ext: &str, strip: u32) -> Result<(), UError> {
     match ext {
         "zip" => extract_zip(archive, dest, strip),
         "tar.gz" | "tgz" => extract_tar_gz(archive, dest, strip),

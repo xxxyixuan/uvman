@@ -3,6 +3,7 @@ mod env;
 mod install;
 mod list;
 mod plugin;
+mod self_update;
 mod use_;
 pub(crate) mod version;
 
@@ -36,6 +37,7 @@ pub enum Commands {
     Use(use_::Use),
     Env(env::Env),
     Activate(activate::Activate),
+    SelfUpdate(self_update::SelfUpdate),
 }
 
 impl Commands {
@@ -48,6 +50,7 @@ impl Commands {
             Commands::Use(cmd) => cmd.run().await,
             Commands::Env(cmd) => cmd.run(),
             Commands::Activate(cmd) => cmd.run(),
+            Commands::SelfUpdate(cmd) => cmd.run().await,
         }
     }
 }
