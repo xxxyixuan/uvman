@@ -3,8 +3,8 @@ mod env;
 mod install;
 mod list;
 mod plugin;
-pub(crate) mod version;
 mod use_;
+pub(crate) mod version;
 
 use crate::Result;
 

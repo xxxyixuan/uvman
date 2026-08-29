@@ -42,9 +42,7 @@ impl Activate {
         let state = absolute(tool_current_path());
         let tools = absolute(tools_dir());
 
-        let script = shell
-            .activation_script(&state, &tools)
-            .map_err(UError::SimpleError)?;
+        let script = shell.activation_script(&state, &tools).map_err(UError::SimpleError)?;
         print!("{script}");
         Ok(())
     }

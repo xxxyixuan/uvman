@@ -60,23 +60,23 @@ repo = "https://github.com/xxxyixuan/uvman-plugin"
 # 缓存设置
 [cache]
 # 下载档案在 cache/tools/ 中的保留时长（小时），超期后随下次安装自动清理
-# 0 表示完全不保留缓存（安装完成后立即删除压缩包）
+# 同时约束插件索引缓存（cache/plugins.json，供 plugin list --remote 使用）的刷新周期
+# 0 表示完全不保留缓存（安装完成后立即删除压缩包，插件索引每次实时拉取）
 # 未配置时默认 24
 # ttl = 24
 "#
 );
 
-/// Write the default config file only if it does not exist (never overwrite user config)
+/// Write the default config file only if it does not exist (never overwrite
+/// user config)
 pub fn ensure_default_config() -> Result<(), UError> {
     let path = paths::global_config_path();
     if path.exists() {
         return Ok(());
     }
     if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir).map_err(|source| UError::FileError {
-            path: dir.to_path_buf(),
-            source,
-        })?;
+        fs::create_dir_all(dir)
+            .map_err(|source| UError::FileError { path: dir.to_path_buf(), source })?;
     }
     fs::write(&path, DEFAULT_CONFIG)
         .map_err(|source| UError::FileError { path: path.clone(), source })?;
@@ -100,13 +100,10 @@ pub struct UvmanConfig {
 
 impl UvmanConfig {
     pub fn load_from(path: &Path) -> Result<UvmanConfig, UError> {
-        let content = std::fs::read_to_string(path).map_err(|source| {
-            UError::FileError { path: path.to_path_buf(), source }
-        })?;
-        toml::from_str(&content).map_err(|source| UError::TomlError {
-            path: path.to_path_buf(),
-            source,
-        })
+        let content = std::fs::read_to_string(path)
+            .map_err(|source| UError::FileError { path: path.to_path_buf(), source })?;
+        toml::from_str(&content)
+            .map_err(|source| UError::TomlError { path: path.to_path_buf(), source })
     }
 }
 
@@ -134,7 +131,8 @@ pub struct NetworkConfig {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CacheConfig {
-    /// Retain downloaded archives for this many hours; 0 deletes immediately after install
+    /// Retain downloaded archives for this many hours; 0 deletes immediately
+    /// after install
     #[serde(default)]
     pub ttl: Option<u64>,
 }
@@ -158,8 +156,8 @@ mod tests {
     #[test]
     fn test_default_config_is_valid_toml() {
         // the template itself must deserialize
-        let config: UvmanConfig = toml::from_str(DEFAULT_CONFIG)
-            .expect("default config must be valid TOML");
+        let config: UvmanConfig =
+            toml::from_str(DEFAULT_CONFIG).expect("default config must be valid TOML");
         assert!(config.plugin.repo.starts_with("https://"));
     }
 }
