@@ -1,6 +1,6 @@
 [package]
 name = "uvman"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2024"
 authors = ["yixuan <https://github.com/xxxyixuan>"]
 description = "A generic development-tool version manager CLI, written in Rust"
