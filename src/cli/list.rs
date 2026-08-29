@@ -1,3 +1,9 @@
+use std::io::{self, IsTerminal, Write};
+
+use crossterm::cursor::{Hide, MoveTo, Show};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen};
+use crossterm::{ExecutableCommand, QueueableCommand};
 use serde::Serialize;
 
 use crate::core::current::{self, CurrentTools};
@@ -7,17 +13,20 @@ use crate::toolset::{self, RemoteVersion};
 use crate::ui::report::print_hint;
 use crate::ui::style::{odim, ogreen};
 
-/// Human-friendly cap on `--remote` output (newest first); `--all` lifts it.
-/// JSON output is never truncated.
-const REMOTE_LIMIT: usize = 30;
+/// Remote listings with more than this many versions open in an interactive
+/// pager instead of dumping to the terminal. `--all` (or piped output) always
+/// prints in full; JSON is never paged.
+const PAGER_THRESHOLD: usize = 50;
 
 /// List installed tools and versions, or a tool's remotely available versions.
 ///
 /// Output is newest-first (human and JSON alike). Local listing marks the
-/// active version with `(current)`. Remote listing marks `(latest)` /
-/// `(lts: <codename>)`, narrows by version prefix
-/// (`uvman list node --remote 22`), and caps the human-readable output at the
-/// newest 30 entries unless `--all` is passed; JSON is never truncated.
+/// active version with `(current)` and always prints in full. Remote listing
+/// marks `(latest)` / `(lts: <codename>)` and narrows by version prefix
+/// (`uvman list node --remote 22`); when more than 50 versions would be
+/// printed on a terminal they open in an interactive pager (`--all` prints
+/// everything directly, and piped/redirected output is never paged). JSON is
+/// always full data.
 #[derive(Debug, clap::Args)]
 #[clap(verbatim_doc_comment, visible_alias = "ls")]
 pub struct List {
@@ -32,7 +41,7 @@ pub struct List {
     #[clap(short = 'r', long, requires = "tool")]
     pub remote: bool,
 
-    /// Show the full remote list instead of the newest N (requires --remote)
+    /// Print the full remote list directly instead of paging (requires --remote)
     #[clap(short = 'a', long, requires = "remote")]
     pub all: bool,
 
@@ -128,8 +137,9 @@ impl List {
             None => versions.iter().collect(),
         };
 
-        println!("{}", ogreen(format!("{tool}:")));
+        let header = ogreen(format!("{tool}:")).to_string();
         if selected.is_empty() {
+            println!("{header}");
             match &self.filter {
                 Some(prefix) => println!("{}", odim(format!("no versions match '{prefix}'"))),
                 None => println!("  (none)"),
@@ -137,25 +147,24 @@ impl List {
             return Ok(());
         }
 
-        let (shown, hidden) = cap_for_display(&selected, self.all);
-        for v in shown {
+        let mut lines = vec![header];
+        for v in &selected {
             let markers = markers_for(
                 &v.version,
                 current.as_deref(),
                 latest.as_deref(),
                 lts.as_ref().map(|(version, codename)| (version.as_str(), codename.as_str())),
             );
-            println!("{}", render_version_line(&v.version, &markers));
+            lines.push(render_version_line(&v.version, &markers));
         }
-        if hidden > 0 {
-            let tip = match &self.filter {
-                Some(_) => format!("… {hidden} more versions — use --all to show everything"),
-                None => format!(
-                    "… {hidden} more versions — filter by prefix (uvman list {tool} --remote 22) \
-                     or use --all"
-                ),
-            };
-            println!("{}", odim(tip));
+
+        // The user's rule: everything ≤ PAGER_THRESHOLD prints in full; more
+        // than that opens an interactive pager on a terminal. --all and
+        // piped/redirected output always print in full.
+        if selected.len() > PAGER_THRESHOLD && !self.all && io::stdout().is_terminal() {
+            show_pager(&lines).unwrap_or_else(|_| print_lines(&lines));
+        } else {
+            print_lines(&lines);
         }
         Ok(())
     }
@@ -226,15 +235,78 @@ fn installed_desc(name: &str) -> Vec<String> {
 
 // ---------------- Remote helpers ----------------
 
-/// Split the selected entries into (shown, hidden) for human output; the
-/// cap applies unless --all. JSON bypasses this entirely.
-fn cap_for_display<'a>(
-    selected: &'a [&'a RemoteVersion], show_all: bool,
-) -> (&'a [&'a RemoteVersion], usize) {
-    if show_all || selected.len() <= REMOTE_LIMIT {
-        (selected, 0)
-    } else {
-        (&selected[..REMOTE_LIMIT], selected.len() - REMOTE_LIMIT)
+// ---------------- Pager (long --remote listings) ----------------
+
+/// Interactive scroll view (alternate screen) for listings longer than the
+/// pager threshold. Falls back to a plain full print when the terminal can't
+/// be set up. Keys: ↑/↓/j/k, PgUp/PgDn, Home/End/g/G, q/Esc/Ctrl-C to quit.
+fn show_pager(lines: &[String]) -> io::Result<()> {
+    terminal::enable_raw_mode()?;
+    let mut stdout = io::stdout();
+    stdout.execute(EnterAlternateScreen)?;
+    let result = pager_loop(&mut stdout, lines);
+    let _ = stdout.execute(Show);
+    let _ = stdout.execute(LeaveAlternateScreen);
+    let _ = terminal::disable_raw_mode();
+    result
+}
+
+fn pager_loop(stdout: &mut io::Stdout, lines: &[String]) -> io::Result<()> {
+    let mut offset = 0usize;
+    stdout.execute(Hide)?;
+    loop {
+        let (cols, rows) = terminal::size().unwrap_or((80, 24));
+        // One row stays reserved for the position/key footer
+        let viewport = ((rows as usize).saturating_sub(1)).min(lines.len()).max(1);
+        offset = clamp_offset(offset, lines.len(), viewport);
+
+        // Redraw the whole viewport; \r\n because raw mode doesn't translate
+        // \n, and a trailing reset guards against truncation cutting a color
+        // sequence mid-way
+        stdout.queue(MoveTo(0, 0))?;
+        for line in &lines[offset..offset + viewport] {
+            let fitted = console::pad_str(line, cols as usize, console::Alignment::Left, None);
+            write!(stdout, "{fitted}\x1b[0m\r\n")?;
+        }
+        let total = lines.len();
+        let (start, end) = (offset + 1, offset + viewport.min(total - offset));
+        let footer =
+            odim(format!("{start}-{end}/{total} lines · ↑↓ scroll · PgUp/PgDn page · q quit",));
+        write!(stdout, "{footer}\x1b[0m")?;
+        stdout.queue(Clear(ClearType::FromCursorDown))?;
+        stdout.flush()?;
+
+        // Offsets mutated here are clamped at the top of the next frame
+        match event::read()? {
+            Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
+                KeyCode::Char('q') | KeyCode::Esc => break,
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break,
+                KeyCode::Down | KeyCode::Char('j') => offset += 1,
+                KeyCode::Up | KeyCode::Char('k') => offset = offset.saturating_sub(1),
+                KeyCode::PageDown => offset += viewport,
+                KeyCode::PageUp => offset = offset.saturating_sub(viewport),
+                KeyCode::Home | KeyCode::Char('g') => offset = 0,
+                KeyCode::End | KeyCode::Char('G') => offset = usize::MAX,
+                _ => {},
+            },
+            _ => {},
+        }
+    }
+    Ok(())
+}
+
+/// Clamp a scroll offset so the viewport stays inside the line list
+fn clamp_offset(offset: usize, total: usize, viewport: usize) -> usize {
+    if total <= viewport {
+        return 0;
+    }
+    offset.min(total - viewport)
+}
+
+/// Plain full print (non-interactive path)
+fn print_lines(lines: &[String]) {
+    for line in lines {
+        println!("{line}");
     }
 }
 
@@ -467,22 +539,13 @@ mod tests {
     }
 
     #[test]
-    fn test_cap_for_display_truncates_newest() {
-        let mut owned: Vec<RemoteVersion> =
-            (0..REMOTE_LIMIT + 5).map(|i| rv(&format!("1.0.{i}"), None)).collect();
-        sort_remote_desc(&mut owned);
-        let selected: Vec<&RemoteVersion> = owned.iter().collect();
-
-        let (shown, hidden) = cap_for_display(&selected, false);
-        // Newest first: the head of the list is kept, the tail is hidden
-        assert_eq!(shown.len(), REMOTE_LIMIT);
-        assert_eq!(hidden, 5);
-        assert_eq!(shown[0].version, "1.0.34");
-
-        // --all lifts the cap
-        let (shown, hidden) = cap_for_display(&selected, true);
-        assert_eq!(shown.len(), REMOTE_LIMIT + 5);
-        assert_eq!(hidden, 0);
+    fn test_clamp_offset() {
+        // Content shorter than the viewport stays at the top
+        assert_eq!(clamp_offset(10, 5, 20), 0);
+        assert_eq!(clamp_offset(0, 60, 20), 0);
+        assert_eq!(clamp_offset(5, 60, 20), 5);
+        // Deep offsets stop at the last full page (End key relies on this)
+        assert_eq!(clamp_offset(usize::MAX, 60, 20), 40);
     }
 
     #[test]
