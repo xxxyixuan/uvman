@@ -1,10 +1,8 @@
-//! Target shell rendering strategy (design in
-//! .tmp/dev-docs/uvman-env-design.md).
+//! Target shell rendering strategy.
 //!
 //! Renders platform-neutral key-values into statements each shell can evaluate
-//! directly, and generates the activate script (design in
-//! uvman-activate-design.md). Stateless, no IO; detection (detect) only reads
-//! environment variables.
+//! directly, and generates the activate script. Stateless, no IO; detection
+//! (detect) only reads environment variables.
 
 use std::path::Path;
 
@@ -160,7 +158,7 @@ impl Shell {
         }
     }
 
-    /// Generate the activate script (design in uvman-activate-design.md 4.x).
+    /// Generate the activation script.
     ///
     /// Bakes absolute state/tools paths; structure: baked constants →
     /// refresh fn (strip-then-eval) → prompt hook (mtime fast path) →
