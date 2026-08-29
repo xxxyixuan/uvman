@@ -1,6 +1,8 @@
 # Config for automatically generated release notes (GitHub official mechanism).
-# Used by `generate_release_notes: true` in .github/workflows/release.yml and
-# by the "Generate release notes" button in the GitHub UI.
+# Used only by the "Generate release notes" button in the GitHub UI.
+#
+# The `release.yml` workflow does NOT use `generate_release_notes: true`:
+# release notes are written manually to follow .tmp/github-release-notes-template.md.
 #
 # Conventions (see .tmp/github-release-notes-template.md):
 # - Release title MUST be the bare version tag, e.g. "v0.1.1" (the GitHub
