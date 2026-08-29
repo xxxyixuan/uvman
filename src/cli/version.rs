@@ -5,12 +5,12 @@ use std::time::Duration;
 use indoc::indoc;
 use semver::Version as Semver;
 
+use crate::Result;
+use crate::core::VERSION;
 use crate::core::http::HTTP_CLIENT;
 use crate::core::platform::{ARCH, OS};
-use crate::core::VERSION;
 use crate::ui::report;
 use crate::ui::style;
-use crate::Result;
 
 /// GitHub Releases API (uvman is only published to GitHub Releases)
 const RELEASES_API_URL: &str = "https://api.github.com/repos/xxxyixuan/uvman/releases/latest";

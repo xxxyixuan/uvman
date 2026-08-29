@@ -53,10 +53,7 @@ impl Env {
 
             let var = env_var_fragment(name);
             println!("{}", shell.set_var(&format!("UVMAN_{var}_VERSION"), &entry.version));
-            println!(
-                "{}",
-                shell.set_var(&format!("UVMAN_{var}_HOME"), &shell.fmt_path(&home))
-            );
+            println!("{}", shell.set_var(&format!("UVMAN_{var}_HOME"), &shell.fmt_path(&home)));
 
             // PATH entries: install root + bin subdir (when present)
             path_entries.push(shell.fmt_path(&home));
@@ -78,8 +75,7 @@ impl Env {
 /// `UVMAN_<FRAGMENT>_VERSION` / `UVMAN_<FRAGMENT>_HOME`) whose tool is no
 /// longer present in the current state table
 fn stale_uvman_vars(
-    table: &current::CurrentTools,
-    env: impl Iterator<Item = (String, String)>,
+    table: &current::CurrentTools, env: impl Iterator<Item = (String, String)>,
 ) -> Vec<String> {
     let live: std::collections::HashSet<String> = table
         .tools
@@ -90,10 +86,8 @@ fn stale_uvman_vars(
         })
         .collect();
 
-    let mut stale: Vec<String> = env
-        .map(|(k, _)| k)
-        .filter(|k| is_uvman_var(k) && !live.contains(k))
-        .collect();
+    let mut stale: Vec<String> =
+        env.map(|(k, _)| k).filter(|k| is_uvman_var(k) && !live.contains(k)).collect();
     stale.sort();
     stale
 }
@@ -108,23 +102,14 @@ fn is_uvman_var(key: &str) -> bool {
     else {
         return false;
     };
-    !mid.is_empty()
-        && mid
-            .chars()
-            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+    !mid.is_empty() && mid.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
 }
 
 /// Tool name → env-var fragment: non-alphanumeric chars become `_`, then
 /// uppercased (`node` → `NODE`, `rust-toolchain` → `RUST_TOOLCHAIN`)
 pub(crate) fn env_var_fragment(tool: &str) -> String {
     tool.chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() {
-                c.to_ascii_uppercase()
-            } else {
-                '_'
-            }
-        })
+        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_uppercase() } else { '_' })
         .collect()
 }
 
@@ -134,10 +119,7 @@ mod tests {
     use crate::core::current::CurrentTools;
 
     fn vars(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
-        pairs
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect()
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
     }
 
     #[test]
@@ -150,19 +132,18 @@ mod tests {
     #[test]
     fn test_stale_uvman_vars_detection() {
         let mut table = CurrentTools::default();
-        table.tools.insert(
-            "node".to_string(),
-            current::CurrentEntry { version: "22.0.0".to_string() },
-        );
+        table
+            .tools
+            .insert("node".to_string(), current::CurrentEntry { version: "22.0.0".to_string() });
 
         let env = vars(&[
-            ("UVMAN_NODE_VERSION", "22.0.0"),   // live: keep
-            ("UVMAN_NODE_HOME", "E:/x"),        // live: keep
-            ("UVMAN_PYTHON_VERSION", "3.12"),   // tool removed: clear
-            ("UVMAN_PYTHON_HOME", "E:/y"),      // tool removed: clear
-            ("UVMAN_SHELL", "pwsh"),            // activation marker, not tool var
-            ("UVMAN_HOME", "E:/z"),             // bare HOME: empty fragment, skip
-            ("PATH", ";"),                      // unrelated
+            ("UVMAN_NODE_VERSION", "22.0.0"), // live: keep
+            ("UVMAN_NODE_HOME", "E:/x"),      // live: keep
+            ("UVMAN_PYTHON_VERSION", "3.12"), // tool removed: clear
+            ("UVMAN_PYTHON_HOME", "E:/y"),    // tool removed: clear
+            ("UVMAN_SHELL", "pwsh"),          // activation marker, not tool var
+            ("UVMAN_HOME", "E:/z"),           // bare HOME: empty fragment, skip
+            ("PATH", ";"),                    // unrelated
         ]);
         let stale = stale_uvman_vars(&table, env.into_iter());
         assert_eq!(
@@ -174,10 +155,9 @@ mod tests {
     #[test]
     fn test_stale_empty_when_all_live() {
         let mut table = CurrentTools::default();
-        table.tools.insert(
-            "node".to_string(),
-            current::CurrentEntry { version: "22.0.0".to_string() },
-        );
+        table
+            .tools
+            .insert("node".to_string(), current::CurrentEntry { version: "22.0.0".to_string() });
         let env = vars(&[("UVMAN_NODE_VERSION", "22.0.0"), ("UVMAN_NODE_HOME", "E:/x")]);
         assert!(stale_uvman_vars(&table, env.into_iter()).is_empty());
     }

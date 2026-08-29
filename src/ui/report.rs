@@ -62,11 +62,7 @@ pub fn print_error(err: &UError) -> u8 {
     // Only add the mise-style footer when there is an underlying cause and
     // verbose is off, so hint-resolvable semantic errors stay quiet.
     if err.has_source() && verbose() == 0 {
-        eprintln!(
-            "{}",
-            crate::ui::style::estyle("run with --verbose for more details")
-                .dim()
-        );
+        eprintln!("{}", crate::ui::style::estyle("run with --verbose for more details").dim());
     }
     err.exit_code()
 }

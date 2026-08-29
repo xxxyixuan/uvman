@@ -1,8 +1,7 @@
+use super::install::parse_spec;
 use crate::Result;
 use crate::core::current;
 use crate::ui::style;
-
-use super::install::parse_spec;
 
 /// Switch the currently used version of a tool
 #[derive(Debug, clap::Args)]
@@ -19,26 +18,16 @@ pub struct Use {
 impl Use {
     pub async fn run(&self) -> Result<()> {
         let (tool, version) = parse_spec(&self.tool_spec)?;
-        let resolved = crate::toolset::resolve_installed_version(
-            &tool,
-            version.as_deref(),
-        )
-        .await?;
+        let resolved = crate::toolset::resolve_installed_version(&tool, version.as_deref()).await?;
 
         let previous = current::current_version(&tool);
         current::set_current(&tool, &resolved)?;
 
         match previous {
-            Some(prev) if prev != resolved => println!(
-                "{}",
-                style::ogreen(format!(
-                    "Switched {tool} {prev} → {resolved}"
-                ))
-            ),
-            _ => println!(
-                "{}",
-                style::ogreen(format!("Using {tool}@{resolved}"))
-            ),
+            Some(prev) if prev != resolved => {
+                println!("{}", style::ogreen(format!("Switched {tool} {prev} → {resolved}")))
+            },
+            _ => println!("{}", style::ogreen(format!("Using {tool}@{resolved}"))),
         }
 
         // Switching only updates the state file; the live shell is refreshed by the

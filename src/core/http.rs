@@ -16,10 +16,8 @@ const DEFAULT_TIMEOUT_SECS: u64 = 30;
 
 pub static HTTP_CLIENT: Lazy<HttpClient> = Lazy::new(|| {
     // Timeout follows global config ([network] timeout), defaulting to 30s
-    let timeout = crate::core::config::GLOBAL_CONFIG
-        .network
-        .timeout
-        .unwrap_or(DEFAULT_TIMEOUT_SECS);
+    let timeout =
+        crate::core::config::GLOBAL_CONFIG.network.timeout.unwrap_or(DEFAULT_TIMEOUT_SECS);
     HttpClient::new(timeout).expect("Failed to start HTTP Client")
 });
 
@@ -33,14 +31,12 @@ impl HttpClient {
         Self::with_proxy(timeout, None)
     }
 
-    /// Build an HTTP client; an explicit proxy wins, else falls back to the global config proxy
-    pub fn with_proxy(
-        timeout: u64, proxy: Option<&str>,
-    ) -> Result<Self, UError> {
+    /// Build an HTTP client; an explicit proxy wins, else falls back to the
+    /// global config proxy
+    pub fn with_proxy(timeout: u64, proxy: Option<&str>) -> Result<Self, UError> {
         let user_agent = "uvman/1.0";
-        let mut builder = Client::builder()
-            .timeout(Duration::from_secs(timeout))
-            .user_agent(user_agent);
+        let mut builder =
+            Client::builder().timeout(Duration::from_secs(timeout)).user_agent(user_agent);
 
         // Explicit proxy wins, else fall back to the global config proxy
         let proxy_url: Option<String> = match proxy {
@@ -48,15 +44,14 @@ impl HttpClient {
             None => config_proxy().map(str::to_string),
         };
         if let Some(p) = proxy_url {
-            let proxy = reqwest::Proxy::all(&p).map_err(|source| {
-                UError::ProxyError { url: p.clone(), source }
-            })?;
+            let proxy = reqwest::Proxy::all(&p)
+                .map_err(|source| UError::ProxyError { url: p.clone(), source })?;
             builder = builder.proxy(proxy);
         }
 
-        let client = builder.build().map_err(|e| {
-            UError::SimpleError(format!("failed to build HTTP client: {e}"))
-        })?;
+        let client = builder
+            .build()
+            .map_err(|e| UError::SimpleError(format!("failed to build HTTP client: {e}")))?;
         Ok(Self { client })
     }
 
@@ -64,12 +59,8 @@ impl HttpClient {
     pub async fn download(
         &self, url: &str, dest_dir: &str, retries: u64, retry_delay: u64,
     ) -> Result<PathBuf, UError> {
-        let filename = url
-            .split("/")
-            .last()
-            .filter(|s| !s.is_empty())
-            .unwrap_or("download")
-            .to_string();
+        let filename =
+            url.split("/").last().filter(|s| !s.is_empty()).unwrap_or("download").to_string();
 
         let dest_path = Path::new(dest_dir).join(&filename);
         self.download_to(url, &dest_path, retries, retry_delay).await
@@ -99,13 +90,9 @@ impl HttpClient {
         }
     }
 
-    async fn try_download_once(
-        &self, url: &str, dest_path: &Path,
-    ) -> Result<PathBuf, UError> {
+    async fn try_download_once(&self, url: &str, dest_path: &Path) -> Result<PathBuf, UError> {
         let temp_path = tmp_sibling(dest_path);
-        let result = self
-            .try_download_to_temp(url, dest_path, &temp_path)
-            .await;
+        let result = self.try_download_to_temp(url, dest_path, &temp_path).await;
         // Clean up the partial .tmp on failure to avoid leftover garbage in cache
         if result.is_err() {
             let _ = tokio::fs::remove_file(&temp_path).await;
@@ -116,83 +103,79 @@ impl HttpClient {
     async fn try_download_to_temp(
         &self, url: &str, dest_path: &Path, temp_path: &Path,
     ) -> Result<PathBuf, UError> {
-        let response = self.client.get(url).send().await.map_err(|e| {
-            UError::NetworkError { url: url.to_string(), source: e }
-        })?;
+        let response = self
+            .client
+            .get(url)
+            .send()
+            .await
+            .map_err(|e| UError::NetworkError { url: url.to_string(), source: e })?;
 
         let status = response.status();
         if !status.is_success() {
-            return Err(UError::HttpStatusError {
-                url: url.to_string(),
-                status: status.as_u16(),
-            });
+            return Err(UError::HttpStatusError { url: url.to_string(), status: status.as_u16() });
         }
 
-        // Progress bar when Content-Length is known, spinner otherwise; hidden in quiet mode
+        // Progress bar when Content-Length is known, spinner otherwise; hidden in quiet
+        // mode
         let progress = if crate::ui::report::quiet() {
             None
         } else {
             Some(new_progress(
-                dest_path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("download"),
+                dest_path.file_name().and_then(|n| n.to_str()).unwrap_or("download"),
                 response.content_length(),
             ))
         };
 
-        let mut file = File::create(temp_path).await.map_err(|e| {
-            UError::FileError { path: temp_path.to_path_buf(), source: e }
-        })?;
+        let mut file = File::create(temp_path)
+            .await
+            .map_err(|e| UError::FileError { path: temp_path.to_path_buf(), source: e })?;
 
         let mut stream = response.bytes_stream();
         while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(|e| UError::NetworkError {
-                url: url.to_string(),
-                source: e,
-            })?;
+            let chunk =
+                chunk.map_err(|e| UError::NetworkError { url: url.to_string(), source: e })?;
             if let Some(pb) = &progress {
                 pb.inc(chunk.len() as u64);
             }
-            file.write_all(&chunk).await.map_err(|e| UError::FileError {
-                path: temp_path.to_path_buf(),
-                source: e,
-            })?;
+            file.write_all(&chunk)
+                .await
+                .map_err(|e| UError::FileError { path: temp_path.to_path_buf(), source: e })?;
         }
         if let Some(pb) = &progress {
-            // Keep the full bar visible (not cleared) so it flows into the install/done message
+            // Keep the full bar visible (not cleared) so it flows into the install/done
+            // message
             pb.finish();
         }
 
-        file.sync_all().await.map_err(|e| UError::FileError {
-            path: temp_path.to_path_buf(),
-            source: e,
-        })?;
+        file.sync_all()
+            .await
+            .map_err(|e| UError::FileError { path: temp_path.to_path_buf(), source: e })?;
         drop(file);
 
-        tokio::fs::rename(temp_path, dest_path).await.map_err(|e| {
-            UError::FileError { path: temp_path.to_path_buf(), source: e }
-        })?;
+        tokio::fs::rename(temp_path, dest_path)
+            .await
+            .map_err(|e| UError::FileError { path: temp_path.to_path_buf(), source: e })?;
 
         Ok(dest_path.to_path_buf())
     }
 
     pub async fn get(&self, url: &str) -> Result<Response, UError> {
-        let response = self.client.get(url).send().await.map_err(|e| {
-            UError::NetworkError { url: url.to_string(), source: e }
-        })?;
+        let response = self
+            .client
+            .get(url)
+            .send()
+            .await
+            .map_err(|e| UError::NetworkError { url: url.to_string(), source: e })?;
 
         let status = response.status();
         if !status.is_success() {
-            return Err(UError::HttpStatusError {
-                url: url.to_string(),
-                status: status.as_u16(),
-            });
+            return Err(UError::HttpStatusError { url: url.to_string(), status: status.as_u16() });
         }
         Ok(response)
     }
 
-    /// Fetch URL content as text (with retries) for small payloads (plugin TOML, templates)
+    /// Fetch URL content as text (with retries) for small payloads (plugin
+    /// TOML, templates)
     pub async fn fetch_text(
         &self, url: &str, retries: u64, retry_delay: u64,
     ) -> Result<String, UError> {
@@ -213,20 +196,22 @@ impl HttpClient {
 
     async fn try_fetch_text_once(&self, url: &str) -> Result<String, UError> {
         let response = self.get(url).await?;
-        response.text().await.map_err(|source| UError::NetworkError {
-            url: url.to_string(),
-            source,
-        })
+        response
+            .text()
+            .await
+            .map_err(|source| UError::NetworkError { url: url.to_string(), source })
     }
 }
 
-/// Read the proxy address from global config (plugin.proxy first, then network.proxy)
+/// Read the proxy address from global config (plugin.proxy first, then
+/// network.proxy)
 fn config_proxy() -> Option<&'static str> {
     let config = &crate::core::config::GLOBAL_CONFIG;
     config.plugin.proxy.as_deref().or_else(|| config.network.proxy.as_deref())
 }
 
-/// Temp path for a half-downloaded file (same dir as target, prefixed .tmp_ + pid)
+/// Temp path for a half-downloaded file (same dir as target, prefixed .tmp_ +
+/// pid)
 fn tmp_sibling(dest_path: &Path) -> PathBuf {
     let temp_dir = dest_path.parent().unwrap_or(Path::new("."));
     temp_dir.join(format!(".tmp_{}", std::process::id()))
@@ -267,7 +252,8 @@ mod tests {
 
     use super::*;
 
-    /// Test client does not inherit the global proxy so localhost mock requests stay local
+    /// Test client does not inherit the global proxy so localhost mock requests
+    /// stay local
     fn create_client() -> HttpClient {
         let client = Client::builder()
             .timeout(Duration::from_secs(30))
