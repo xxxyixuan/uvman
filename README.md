@@ -146,7 +146,7 @@ $ uvman list node --remote       # 查看远端可用版本
 | `uvman install <tool>@<version>` | 安装工具（别名 `i`），`--force` 强制重装、失败自动回滚              |
 | `uvman list [tool]`              | 列出本地已安装版本；`--remote` 列远端版本、`--json` 输出 JSON     |
 | `uvman use <tool>@<version>`     | 切换当前使用版本（别名 `u`），需已安装                           |
-| `uvman env [tool]`               | 输出 Shell 环境语句（`activate` 的后台求值器），`--shell` 指定语法 |
+| `uvman env`                      | （内部命令）`activate` 的后台求值器，不在 `help` 中显示，`--shell` 指定语法 |
 | `uvman activate`                 | 输出激活脚本，通过提示符钩子自动刷新（支持 bash / zsh / fish / pwsh） |
 | `uvman plugin <cmd>`             | 插件管理：`install` / `uninstall` / `list` / `info`  |
 | `uvman version`                  | 显示版本信息（别名 `v`，`-V` 可用），`--json` 输出结构化信息         |
