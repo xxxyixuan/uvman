@@ -15,7 +15,7 @@ name = "uvman"
 path = "src/main.rs"
 
 [dependencies]
-clap = { version = "4", features = ["env", "derive", "string"] }
+clap = { version = "4", features = ["env", "derive", "string", "wrap_help"] }
 color-eyre = "0.6"
 console = "0.16"
 eyre = "0.6"
