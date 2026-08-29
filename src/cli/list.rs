@@ -266,24 +266,41 @@ const CURRENT_STYLE: Style = Style::new().fg(Color::Green);
 const DIM_STYLE: Style = Style::new().add_modifier(Modifier::DIM);
 const SEARCH_MATCH_STYLE: Style = Style::new().add_modifier(Modifier::REVERSED);
 
+/// Where the user left the pager, for echoing the visible page after exit
+struct PagerExit {
+    /// First visible row at quit time
+    offset: usize,
+    /// Visible row count at quit time
+    viewport: usize,
+    /// q/Esc quit: echo the page; Ctrl-C: plain interrupt, no echo
+    echo: bool,
+}
+
 /// Interactive scroll view (alternate screen, ratatui) for listings longer
 /// than the pager threshold. Falls back to a plain full print when the
 /// terminal can't be set up.
 ///
 /// Keys: ↑/↓/j/k line scroll, ←/→ page, Home/End/g/G jump, `/` search
-/// (Enter jumps to the match, `n` next match), q/Esc/Ctrl-C to quit.
+/// (Enter jumps to the match, `n` next match). q/Esc quit and echo the page
+/// on screen for the next command; Ctrl-C quits without echoing.
 fn show_pager(tool: &str, rows: &[VersionRow]) -> io::Result<()> {
     // try_init sets up raw mode + the alternate screen (and a panic hook that
     // restores the terminal first); restore undoes both
     let mut terminal = ratatui::try_init()?;
     terminal.hide_cursor()?;
-    let result = pager_loop(&mut terminal, tool, rows);
+    let exit = pager_loop(&mut terminal, tool, rows);
     let _ = terminal.show_cursor();
     ratatui::restore();
-    result
+    let exit = exit?;
+    if exit.echo {
+        print_page(tool, rows, exit.offset, exit.viewport);
+    }
+    Ok(())
 }
 
-fn pager_loop(terminal: &mut DefaultTerminal, tool: &str, rows: &[VersionRow]) -> io::Result<()> {
+fn pager_loop(
+    terminal: &mut DefaultTerminal, tool: &str, rows: &[VersionRow],
+) -> io::Result<PagerExit> {
     // Version strings are the search corpus
     let versions: Vec<&str> = rows.iter().map(|r| r.version.as_str()).collect();
     let mut state = PagerState::default();
@@ -300,9 +317,9 @@ fn pager_loop(terminal: &mut DefaultTerminal, tool: &str, rows: &[VersionRow]) -
         if key.kind != KeyEventKind::Press {
             continue;
         }
-        // Ctrl-C quits from any mode
+        // Ctrl-C quits from any mode (as an interrupt: no page echo)
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
-            break;
+            return Ok(PagerExit { offset: state.offset, viewport, echo: false });
         }
         state.message = None;
 
@@ -339,7 +356,9 @@ fn pager_loop(terminal: &mut DefaultTerminal, tool: &str, rows: &[VersionRow]) -
             },
             // ---- normal mode ----
             None => match key.code {
-                KeyCode::Char('q') | KeyCode::Esc => break,
+                KeyCode::Char('q') | KeyCode::Esc => {
+                    return Ok(PagerExit { offset: state.offset, viewport, echo: true });
+                },
                 KeyCode::Char('/') => state.query = Some(String::new()),
                 KeyCode::Char('n') => match state.needle.clone() {
                     Some(term) => {
@@ -367,7 +386,6 @@ fn pager_loop(terminal: &mut DefaultTerminal, tool: &str, rows: &[VersionRow]) -
             },
         }
     }
-    Ok(())
 }
 
 /// One frame: fixed `tool:` header, the visible version rows, and the
@@ -386,7 +404,7 @@ fn render_pager(
             let (start, end) =
                 (state.offset + 1, state.offset + viewport.min(total - state.offset));
             dim_line(format!(
-                "{start}-{end}/{total} versions · / search · n next · ←→ page · q quit"
+                "{start}-{end}/{total} versions · / search · n next · ←→ page · q quit (echo page)"
             ))
         },
     };
@@ -480,6 +498,19 @@ fn print_plain(tool: &str, rows: &[VersionRow]) {
     for row in rows {
         println!("{}", render_version_line(&row.version, &row.markers));
     }
+}
+
+/// Echo the page the user was viewing when they quit the pager, so the
+/// versions stay visible (and copyable) for the next `install` / `use`
+fn print_page(tool: &str, rows: &[VersionRow], offset: usize, viewport: usize) {
+    println!("{}", ogreen(format!("{tool}:")));
+    let end = offset + viewport.min(rows.len() - offset);
+    for row in &rows[offset..end] {
+        println!("{}", render_version_line(&row.version, &row.markers));
+    }
+    let (start, total) = (offset + 1, rows.len());
+    let example = rows[offset].version.as_str();
+    println!("{}", odim(format!("… {start}-{end}/{total} · e.g. uvman use {tool}@{example}")));
 }
 
 /// Clamp a scroll offset so the viewport stays inside the line list
