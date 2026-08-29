@@ -3,11 +3,13 @@ pub mod current;
 pub mod error;
 pub mod file;
 pub mod http;
+pub mod install;
 pub mod paths;
 pub mod platform;
 pub mod plugin;
 pub mod shell;
 pub mod suggest;
+pub mod upgrade;
 mod types;
 
 pub use types::*;
