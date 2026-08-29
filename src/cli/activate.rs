@@ -11,6 +11,7 @@ use crate::core::shell::Shell;
 ///
 /// Persist in your shell config (put it last, so a custom prompt function
 /// is not overwritten):
+///
 ///   bash/zsh:  eval "$(uvman activate)"
 ///   fish:      uvman activate | source
 ///   pwsh:      uvman activate | Out-String | Invoke-Expression
@@ -20,6 +21,7 @@ use crate::core::shell::Shell;
 /// under the AutoRun registry value to apply at startup, or run it manually
 /// after each switch.
 #[derive(Debug, clap::Args)]
+#[clap(verbatim_doc_comment)]
 pub struct Activate {
     /// Target shell syntax; defaults to auto-detection
     #[clap(short = 's', long, value_enum)]
