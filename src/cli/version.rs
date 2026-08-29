@@ -7,13 +7,10 @@ use semver::Version as Semver;
 
 use crate::Result;
 use crate::core::VERSION;
-use crate::core::http::HTTP_CLIENT;
 use crate::core::platform::{ARCH, OS};
+use crate::core::upgrade;
 use crate::ui::report;
 use crate::ui::style;
-
-/// GitHub Releases API (uvman is only published to GitHub Releases)
-const RELEASES_API_URL: &str = "https://api.github.com/repos/xxxyixuan/uvman/releases/latest";
 
 /// Short independent timeout for the upgrade check: it is a best-effort nicety,
 /// so `uvman version` (including `--json` used by scripts) must return promptly
@@ -84,37 +81,26 @@ async fn print_upgrade_hint() {
     let Some(latest) = latest_release().await else {
         return;
     };
-    let Some(current) = parse_version(&VERSION.to_string()) else {
+    let Some(current) = upgrade::parse_version(&VERSION.to_string()) else {
         return;
     };
     if latest > current {
-        println!(
-            "{} A new release is available: {} (current: {current})",
-            style::oyellow("!"),
-            latest
+        report::print_hint(
+            &format!("a new release is available: {latest} (current: {current})"),
+            &["uvman self-update".into()],
         );
     }
 }
 
-/// Best-effort fetch of the latest release tag, parsed as a semver version.
+/// Best-effort fetch of the latest release version.
 ///
 /// Every failure mode — timeout, network error, unexpected JSON, unparsable
 /// tag — collapses to `None` so callers never handle errors.
 async fn latest_release() -> Option<Semver> {
-    let text = tokio::time::timeout(
-        CHECK_TIMEOUT,
-        // no retries: the check is best-effort and must stay fast
-        HTTP_CLIENT.fetch_text(RELEASES_API_URL, 0, 0),
-    )
-    .await
-    .ok()? // timed out
-    .ok()?; // network / HTTP failure
-    let release: serde_json::Value = serde_json::from_str(&text).ok()?;
-    let tag = release.get("tag_name")?.as_str()?;
-    parse_version(tag)
-}
-
-/// Parse a release tag or version string, ignoring an optional `v` prefix
-fn parse_version(tag: &str) -> Option<Semver> {
-    Semver::parse(tag.trim_start_matches(['v', 'V'])).ok()
+    // no retries: the check is best-effort and must stay fast
+    let release = tokio::time::timeout(CHECK_TIMEOUT, upgrade::fetch_latest_release(false))
+        .await
+        .ok()? // timed out
+        .ok()?; // network / HTTP / payload failure
+    Some(release.version)
 }
