@@ -1,6 +1,6 @@
 [package]
 name = "uvman"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2024"
 authors = ["yixuan <https://github.com/xxxyixuan>"]
 description = "A generic development-tool version manager CLI, written in Rust"
@@ -15,7 +15,7 @@ name = "uvman"
 path = "src/main.rs"
 
 [dependencies]
-clap = { version = "4", features = ["env", "derive", "string"] }
+clap = { version = "4", features = ["env", "derive", "string", "wrap_help"] }
 color-eyre = "0.6"
 console = "0.16"
 eyre = "0.6"

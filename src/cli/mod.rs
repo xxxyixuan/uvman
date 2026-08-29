@@ -35,6 +35,8 @@ pub enum Commands {
     Install(install::Install),
     List(list::List),
     Use(use_::Use),
+    /// Internal evaluator driven by activate scripts; not user-facing
+    #[clap(hide = true)]
     Env(env::Env),
     Activate(activate::Activate),
     SelfUpdate(self_update::SelfUpdate),

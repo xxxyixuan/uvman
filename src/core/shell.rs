@@ -1,10 +1,8 @@
-//! Target shell rendering strategy (design in
-//! .tmp/dev-docs/uvman-env-design.md).
+//! Target shell rendering strategy.
 //!
 //! Renders platform-neutral key-values into statements each shell can evaluate
-//! directly, and generates the activate script (design in
-//! uvman-activate-design.md). Stateless, no IO; detection (detect) only reads
-//! environment variables.
+//! directly, and generates the activate script. Stateless, no IO; detection
+//! (detect) only reads environment variables.
 
 use std::path::Path;
 
@@ -26,6 +24,16 @@ pub enum Shell {
     /// Windows cmd.exe
     #[value(alias = "cmd.exe", alias = "bat")]
     Cmd,
+}
+
+/// Whether the running shell has uvman's activation script loaded.
+///
+/// The `activation_script` templates export `UVMAN_SHELL` on eval, so the var
+/// doubles as the activation marker: hook-driven paths check it to defer to
+/// the prompt hook (or stay silent) instead of printing manual-refresh
+/// guidance.
+pub fn is_activated() -> bool {
+    std::env::var_os("UVMAN_SHELL").is_some()
 }
 
 impl Shell {
@@ -150,7 +158,7 @@ impl Shell {
         }
     }
 
-    /// Generate the activate script (design in uvman-activate-design.md 4.x).
+    /// Generate the activation script.
     ///
     /// Bakes absolute state/tools paths; structure: baked constants →
     /// refresh fn (strip-then-eval) → prompt hook (mtime fast path) →
