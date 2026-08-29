@@ -13,7 +13,7 @@ use crate::Result;
 use crate::core::current::{self, CurrentTools};
 use crate::core::error::UError;
 use crate::core::paths::{absolute, tools_dir};
-use crate::core::shell::Shell;
+use crate::core::shell::{Shell, is_activated};
 use crate::ui::report::print_hint;
 
 /// Emit shell statements that sync the live environment with the current
@@ -41,10 +41,9 @@ impl Env {
         out.flush().map_err(UError::from)?;
 
         // Explain a silent result to a human probing the hidden command; a
-        // hook-driven invocation (UVMAN_SHELL set by the activate script,
-        // same marker `use` checks) must stay silent to avoid spamming every
-        // prompt.
-        if plan.tools.is_empty() && std::env::var_os("UVMAN_SHELL").is_none() {
+        // hook-driven invocation (see is_activated) must stay silent to avoid
+        // spamming every prompt.
+        if plan.tools.is_empty() && !is_activated() {
             print_hint(
                 "nothing to export: no tools are active yet (`uvman use <tool>@<version>` \
                  activates an installed one; `uvman activate` keeps your shell in sync)",

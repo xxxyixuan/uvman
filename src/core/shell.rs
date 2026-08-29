@@ -28,6 +28,16 @@ pub enum Shell {
     Cmd,
 }
 
+/// Whether the running shell has uvman's activation script loaded.
+///
+/// The `activation_script` templates export `UVMAN_SHELL` on eval, so the var
+/// doubles as the activation marker: hook-driven paths check it to defer to
+/// the prompt hook (or stay silent) instead of printing manual-refresh
+/// guidance.
+pub fn is_activated() -> bool {
+    std::env::var_os("UVMAN_SHELL").is_some()
+}
+
 impl Shell {
     /// Environment inference: the default source aside from explicit --shell.
     ///
