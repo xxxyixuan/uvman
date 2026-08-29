@@ -21,5 +21,12 @@ pub(crate) fn init() -> Result<()> {
     // Initialize the global configuration
     Lazy::force(&config::GLOBAL_CONFIG);
 
+    // Self-update housekeeping: a previous upgrade may have left the old
+    // binary as `<exe>.old` (it stays locked until the upgrading process
+    // exits); remove it now that we are a fresh process.
+    if let Ok(exe) = std::env::current_exe() {
+        crate::core::install::cleanup_stale_backup(&exe);
+    }
+
     Ok(())
 }
