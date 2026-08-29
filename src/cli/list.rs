@@ -1,13 +1,11 @@
 use std::io::{self, IsTerminal};
 
-use crossterm::ExecutableCommand;
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
-use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
-use ratatui::prelude::{
-    Color, Constraint, CrosstermBackend, Layout, Line, Modifier, Rect, Span, Style,
-};
+use ratatui::prelude::{Color, Constraint, Layout, Line, Modifier, Rect, Span, Style};
 use ratatui::widgets::Paragraph;
-use ratatui::{Frame, Terminal};
+use ratatui::{DefaultTerminal, Frame};
+// Input events are delegated to ratatui's own crossterm backend crate; its
+// re-export is the ratatui-blessed way to read them (no direct crossterm dep)
+use ratatui_crossterm::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use serde::Serialize;
 
 use crate::core::current::{self, CurrentTools};
@@ -275,21 +273,17 @@ const SEARCH_MATCH_STYLE: Style = Style::new().add_modifier(Modifier::REVERSED);
 /// Keys: ↑/↓/j/k line scroll, ←/→ page, Home/End/g/G jump, `/` search
 /// (Enter jumps to the match, `n` next match), q/Esc/Ctrl-C to quit.
 fn show_pager(tool: &str, rows: &[VersionRow]) -> io::Result<()> {
-    terminal::enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    stdout.execute(EnterAlternateScreen)?;
-    let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
+    // try_init sets up raw mode + the alternate screen (and a panic hook that
+    // restores the terminal first); restore undoes both
+    let mut terminal = ratatui::try_init()?;
     terminal.hide_cursor()?;
     let result = pager_loop(&mut terminal, tool, rows);
     let _ = terminal.show_cursor();
-    let _ = terminal.backend_mut().execute(LeaveAlternateScreen);
-    let _ = terminal::disable_raw_mode();
+    ratatui::restore();
     result
 }
 
-fn pager_loop(
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, tool: &str, rows: &[VersionRow],
-) -> io::Result<()> {
+fn pager_loop(terminal: &mut DefaultTerminal, tool: &str, rows: &[VersionRow]) -> io::Result<()> {
     // Version strings are the search corpus
     let versions: Vec<&str> = rows.iter().map(|r| r.version.as_str()).collect();
     let mut state = PagerState::default();
