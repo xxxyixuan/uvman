@@ -10,8 +10,9 @@ use crate::core::paths::tool_current_path;
 /// `config/tool_current.toml`: records the currently active version of each
 /// tool.
 ///
-/// Responsibility boundary (per design doc): `use` is the sole writer;
-/// `env` / `list` only read. A missing or corrupt file is treated as "no active
+/// Responsibility boundary (per design doc): `use` writes version switches
+/// and `uninstall` removes the entry of an uninstalled active version; `env` /
+/// `list` only read. A missing or corrupt file is treated as "no active
 /// version".
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct CurrentTools {
@@ -42,6 +43,12 @@ pub fn set_current(tool: &str, version: &str) -> Result<(), UError> {
     set_current_at(&tool_current_path(), tool, version)
 }
 
+/// Remove a tool's active-version entry (its active version was uninstalled);
+/// returns whether an entry existed
+pub fn remove_current(tool: &str) -> Result<bool, UError> {
+    remove_current_at(&tool_current_path(), tool)
+}
+
 pub fn load_from(path: &Path) -> CurrentTools {
     match fs::read_to_string(path) {
         Ok(text) => toml::from_str(&text).unwrap_or_default(),
@@ -53,12 +60,25 @@ pub fn load_from(path: &Path) -> CurrentTools {
 pub fn set_current_at(path: &Path, tool: &str, version: &str) -> Result<(), UError> {
     let mut table = load_from(path);
     table.tools.insert(tool.to_string(), CurrentEntry { version: version.to_string() });
+    write_table(path, &table)
+}
 
+pub fn remove_current_at(path: &Path, tool: &str) -> Result<bool, UError> {
+    let mut table = load_from(path);
+    if table.tools.remove(tool).is_none() {
+        return Ok(false);
+    }
+    write_table(path, &table)?;
+    Ok(true)
+}
+
+/// Serialize and persist the table (creating parent dirs as needed)
+fn write_table(path: &Path, table: &CurrentTools) -> Result<(), UError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .map_err(|source| UError::FileError { path: parent.to_path_buf(), source })?;
     }
-    let text = toml::to_string_pretty(&table)
+    let text = toml::to_string_pretty(table)
         .map_err(|source| UError::TomlSerializeError { path: path.to_path_buf(), source })?;
     fs::write(path, text).map_err(|source| UError::FileError { path: path.to_path_buf(), source })
 }
@@ -105,5 +125,21 @@ mod tests {
         let path = dir.path().join("tool_current.toml");
         fs::write(&path, "not = [valid").unwrap();
         assert!(load_from(&path).tools.is_empty());
+    }
+
+    #[test]
+    fn test_remove_current() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nested/tool_current.toml");
+        set_current_at(&path, "node", "22.19.0").unwrap();
+        set_current_at(&path, "go", "1.23.0").unwrap();
+
+        assert!(remove_current_at(&path, "node").unwrap());
+        // Other tools' entries survive; the removed one is gone
+        assert!(load_from(&path).tools.contains_key("go"));
+        assert!(!load_from(&path).tools.contains_key("node"));
+
+        // Removing again is a no-op reporting false
+        assert!(!remove_current_at(&path, "node").unwrap());
     }
 }
