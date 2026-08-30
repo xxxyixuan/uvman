@@ -54,11 +54,12 @@ impl SelfUpdate {
             },
         };
 
-        let current = upgrade::parse_version(&VERSION.to_string())
-            .ok_or_else(|| crate::core::error::UError::SimpleError(format!(
+        let current = upgrade::parse_version(&VERSION.to_string()).ok_or_else(|| {
+            crate::core::error::UError::SimpleError(format!(
                 "cannot parse the running version '{}'",
                 *VERSION
-            )))?;
+            ))
+        })?;
 
         let up_to_date = latest.version <= current;
         if self.json {
@@ -68,11 +69,7 @@ impl SelfUpdate {
 
         if up_to_date {
             if !report::quiet() {
-                println!(
-                    "{} uvman is up to date ({})",
-                    style::ogreen("✔"),
-                    latest.tag
-                );
+                println!("{} uvman is up to date ({})", style::ogreen("✔"), latest.tag);
             }
             return Ok(());
         }
@@ -87,10 +84,10 @@ impl SelfUpdate {
             return Ok(());
         }
 
-        if !self.yes && console::user_attended() && !confirm(&format!(
-            "update uvman {current} → {}?",
-            latest.version
-        )) {
+        if !self.yes
+            && console::user_attended()
+            && !confirm(&format!("update uvman {current} → {}?", latest.version))
+        {
             println!("aborted");
             return Ok(());
         }
@@ -99,7 +96,9 @@ impl SelfUpdate {
     }
 
     /// Full upgrade: download → verify → extract → replace
-    async fn install(&self, latest: &upgrade::LatestRelease, current: &semver::Version) -> Result<()> {
+    async fn install(
+        &self, latest: &upgrade::LatestRelease, current: &semver::Version,
+    ) -> Result<()> {
         let url = upgrade::asset_url(&latest.tag);
         let filename = upgrade::asset_filename(&latest.tag);
 
@@ -109,9 +108,9 @@ impl SelfUpdate {
         let archive = download_dir.path().join(&filename);
         HTTP_CLIENT.download_to(&url, &archive, DOWNLOAD_RETRIES, RETRY_DELAY_SECS).await?;
 
-        let sha_text =
-            HTTP_CLIENT.fetch_text(&format!("{url}.sha256"), DOWNLOAD_RETRIES, RETRY_DELAY_SECS)
-                .await?;
+        let sha_text = HTTP_CLIENT
+            .fetch_text(&format!("{url}.sha256"), DOWNLOAD_RETRIES, RETRY_DELAY_SECS)
+            .await?;
         let expected = install::parse_sha256(&sha_text).ok_or_else(|| {
             crate::core::error::UError::ChecksumError {
                 message: format!("no valid sha256 digest found for '{filename}'"),
@@ -141,20 +140,13 @@ impl SelfUpdate {
             )),
         }
 
-        println!(
-            "{} uvman updated to {} (was {current})",
-            style::ogreen("✔"),
-            latest.tag,
-        );
+        println!("{} uvman updated to {} (was {current})", style::ogreen("✔"), latest.tag,);
         report::print_hint("restart your terminal, then verify with:", &["uvman version".into()]);
         Ok(())
     }
 
     fn print_json(
-        &self,
-        current: &semver::Version,
-        latest: &upgrade::LatestRelease,
-        up_to_date: bool,
+        &self, current: &semver::Version, latest: &upgrade::LatestRelease, up_to_date: bool,
     ) {
         let json = serde_json::json!({
             "current": current.to_string(),

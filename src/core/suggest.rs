@@ -47,15 +47,17 @@ fn damerau_levenshtein(a: &str, b: &str) -> usize {
 /// spelling drift.
 pub fn did_you_mean(input: &str, candidates: &[String]) -> Vec<String> {
     let threshold = (input.len() / 3).max(1);
-    let mut scored: Vec<(usize, String)> = candidates
+    // Score on borrowed &str; only the (at most 3) returned names are cloned
+    let mut scored: Vec<(usize, &str)> = candidates
         .iter()
+        .map(String::as_str)
         .filter(|c| !c.is_empty())
-        .map(|c| (damerau_levenshtein(input, c), c.clone()))
+        .map(|c| (damerau_levenshtein(input, c), c))
         .filter(|(d, _)| *d <= threshold)
         .collect();
     if !scored.is_empty() {
-        scored.sort_by(|x, y| x.0.cmp(&y.0).then_with(|| x.1.cmp(&y.1)));
-        return scored.into_iter().map(|(_, c)| c).take(3).collect();
+        scored.sort_unstable_by(|x, y| x.0.cmp(&y.0).then_with(|| x.1.cmp(y.1)));
+        return scored.into_iter().take(3).map(|(_, c)| c.to_string()).collect();
     }
 
     // Fallback: first hyphen-segment as a prefix (meaningful only if len >= 2)
@@ -64,7 +66,7 @@ pub fn did_you_mean(input: &str, candidates: &[String]) -> Vec<String> {
         let prefix = first_token.to_lowercase();
         let mut matched: Vec<String> =
             candidates.iter().filter(|c| c.to_lowercase().starts_with(&prefix)).cloned().collect();
-        matched.sort();
+        matched.sort_unstable();
         matched.truncate(3);
         return matched;
     }

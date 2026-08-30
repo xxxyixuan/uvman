@@ -13,14 +13,12 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use indicatif::ProgressBar;
 use serde::{Deserialize, Serialize};
 
-use crate::core::SingleOrArray;
 use crate::core::config::GLOBAL_CONFIG;
 use crate::core::error::UError;
 use crate::core::http::HTTP_CLIENT;
 use crate::core::plugin::{InstallBin, Release, ToolPlugin};
 use crate::core::suggest::did_you_mean;
 use crate::core::{paths, platform};
-use crate::ui::style::{ered, ogreen};
 
 /// Default cache TTL: 24 hours
 const DEFAULT_CACHE_TTL_HOURS: u64 = 24;
@@ -65,6 +63,42 @@ pub struct HashPlan {
     pub pattern: Option<String>,
     /// Official archive file name (used for line matching when no pattern)
     pub filename: String,
+}
+
+/// A validated hex digest (sha256: 64 / sha512: 128 lowercase hex chars).
+///
+/// The only public constructor is [`HexDigest::parse`], so a `HexDigest` in
+/// scope is well-formed by type: comparison and persistence never re-validate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct HexDigest(String);
+
+impl HexDigest {
+    /// Validate and normalize (lowercase) a raw digest string.
+    pub(crate) fn parse(raw: &str) -> Option<Self> {
+        let normalized = raw.trim().to_lowercase();
+        (matches!(normalized.len(), 64 | 128) && normalized.bytes().all(|b| b.is_ascii_hexdigit()))
+            .then_some(Self(normalized))
+    }
+
+    /// Wrap a digest that is already well-formed.
+    ///
+    /// Valid by construction: callers pass either the output of `hex_encode`
+    /// over a sha2 finalize (always 64/128 lowercase hex) or a token captured
+    /// by a regex anchoring exactly `{64,128}` hex chars.
+    fn from_lowercase_hex(raw: &str) -> Self {
+        debug_assert!(Self::parse(raw).is_some(), "digest must be pre-validated: {raw}");
+        Self(raw.to_lowercase())
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for HexDigest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
 }
 
 /// Build an install plan from the plugin and version request (performs no
@@ -126,14 +160,13 @@ pub async fn plan(name: &str, version: Option<&str>) -> Result<InstallPlan, UErr
 /// priority) → plugin mirrors → plugin default; keep only the first occurrence
 /// of duplicates
 fn merged_sources(name: &str, plugin: &ToolPlugin) -> Vec<String> {
-    let mut sources: Vec<String> = Vec::new();
-    if let Some(global) = GLOBAL_CONFIG.registry.get(name) {
-        match global {
-            SingleOrArray::Single(s) => sources.push(s.clone()),
-            SingleOrArray::Array(list) => sources.extend(list.iter().cloned()),
-        }
-    }
+    let mut sources: Vec<String> = GLOBAL_CONFIG
+        .registry
+        .get(name)
+        .map(|entry| entry.items().into_iter().cloned().collect())
+        .unwrap_or_default();
     for s in plugin.registry.sources() {
+        // Candidate lists are a handful of entries, so a linear scan beats hashing
         if !sources.contains(&s) {
             sources.push(s);
         }
@@ -306,15 +339,7 @@ fn run_stage<T>(msg: String, f: impl FnOnce() -> Result<T, UError>) -> Result<T,
 /// Redraw the stage line on completion: drop the spinner and colorize by result
 /// mark
 fn finish_stage(pb: &ProgressBar, ok: bool, msg: &str) {
-    pb.disable_steady_tick();
-    pb.set_style(
-        indicatif::ProgressStyle::with_template("{msg}").expect("valid progress template"),
-    );
-    let mark = if ok { "✔" } else { "✖" };
-    let line = format!("{mark} {msg}");
-    let styled = if ok { ogreen(line).to_string() } else { ered(line).to_string() };
-    pb.set_message(styled);
-    pb.finish();
+    crate::ui::progress::finish_marked(pb, ok, msg);
 }
 
 /// Single-stage spinner; hidden in quiet mode.
@@ -324,10 +349,7 @@ fn stage_spinner() -> Option<ProgressBar> {
         return None;
     }
     let pb = ProgressBar::new_spinner();
-    pb.set_style(
-        indicatif::ProgressStyle::with_template("{spinner:.green} {msg}")
-            .expect("valid progress template"),
-    );
+    pb.set_style(crate::ui::progress::spinner_style("{spinner:.green} {msg}"));
     pb.enable_steady_tick(Duration::from_millis(120));
     Some(pb)
 }
@@ -381,13 +403,15 @@ fn save_records(tool_dir: &Path, records: &ArchiveRecords) {
 }
 
 /// Record (or refresh) an archive's download time, TTL, and checksum
-fn record_archive(archive: &Path, ttl_hours: u64, hash: Option<(&str, &str)>) {
+fn record_archive(archive: &Path, ttl_hours: u64, hash: Option<(&str, &HexDigest)>) {
     let Some(tool_dir) = archive.parent() else { return };
     let Some(name) = archive.file_name().and_then(OsStr::to_str) else {
         return;
     };
     let (algorithm, expected) = match hash {
-        Some((algorithm, expected)) => (Some(algorithm.to_string()), Some(expected.to_string())),
+        Some((algorithm, expected)) => {
+            (Some(algorithm.to_string()), Some(expected.as_str().to_string()))
+        },
         None => (None, None),
     };
     let mut records = load_records(tool_dir);
@@ -415,8 +439,18 @@ fn verify_recorded_hash(plan: &InstallPlan) -> Result<(), UError> {
     let (Some(algorithm), Some(expected)) = (&record.algorithm, &record.hash) else {
         return Ok(());
     };
+    // A stored hash that fails validation can never match; report a mismatch so
+    // the caller drops the archive and re-downloads (self-heal)
+    let Some(expected) = HexDigest::parse(expected) else {
+        return Err(UError::ChecksumError {
+            message: format!(
+                "cached record holds an invalid digest '{expected}' for {}",
+                plan.archive_path.display()
+            ),
+        });
+    };
     let actual = compute_checksum(&plan.archive_path, algorithm)?;
-    if actual != *expected {
+    if actual != expected {
         return Err(UError::ChecksumError {
             message: format!(
                 "expected {expected}, got {actual} for {} \
@@ -553,25 +587,21 @@ fn migrate_legacy_tool_dir(cache: &Path, legacy: &Path, default_ttl: u64) {
 fn gc_tool_cache(tool_dir: &Path, default_ttl: u64) {
     let mut records = load_records(tool_dir);
     let now = SystemTime::now();
+    let mut changed = false;
 
     // Record-driven: drop entries that are expired or whose archive is gone
-    let mut changed = false;
-    let names: Vec<String> = records.archives.keys().cloned().collect();
-    for name in names {
-        let path = tool_dir.join(&name);
-        if !path.exists() {
-            records.archives.remove(&name);
-            changed = true;
-            continue;
-        }
-        let rec = records.archives[&name].clone();
-        let expires = UNIX_EPOCH + Duration::from_secs(rec.downloaded_at + rec.ttl_hours * 3600);
-        if now >= expires {
+    records.archives.retain(|name, record| {
+        let path = tool_dir.join(name);
+        let expires =
+            UNIX_EPOCH + Duration::from_secs(record.downloaded_at + record.ttl_hours * 3600);
+        if !path.exists() || now >= expires {
+            // Missing archives need no removal; the no-op error is ignored
             let _ = fs::remove_file(&path);
-            records.archives.remove(&name);
             changed = true;
+            return false;
         }
-    }
+        true
+    });
 
     // Orphans (no record): fall back to mtime + current TTL
     if let Ok(entries) = fs::read_dir(tool_dir) {
@@ -658,7 +688,7 @@ async fn resolve_version(
 
     // Partial version (e.g. 22 / 22.19) → latest matching the prefix
     if is_partial_version(request) {
-        return resolve_partial(&versions, request).ok_or_else(|| UError::VersionNotFound {
+        return resolve_partial(versions.iter(), request).ok_or_else(|| UError::VersionNotFound {
             tool: name.to_string(),
             version: request.to_string(),
         });
@@ -667,11 +697,11 @@ async fn resolve_version(
     // Aliases don't fall back: error explicitly on no match, avoiding silently
     // installing the wrong line
     let resolved = match request {
-        "latest" => latest_of(&versions),
+        "latest" => latest_of(versions.iter()),
         // Prefer metadata (api source); fall back to string naming convention (static source, e.g.
         // "22.1.0-lts")
-        "lts" => lts_of(&versions).or_else(|| version_matching(&versions, "lts")),
-        "nightly" => version_matching(&versions, "nightly"),
+        "lts" => lts_of(versions.iter()).or_else(|| version_matching(versions.iter(), "lts")),
+        "nightly" => version_matching(versions.iter(), "nightly"),
         _ => None,
     };
     resolved.ok_or_else(|| UError::VersionNotFound {
@@ -715,11 +745,11 @@ pub async fn resolve_installed_version(
     }
 
     if is_partial_version(request) {
-        return resolve_partial(&installed_rv, request).ok_or_else(not_found);
+        return resolve_partial(installed_rv.iter(), request).ok_or_else(not_found);
     }
 
     let resolved = match request {
-        "latest" => latest_of(&installed_rv),
+        "latest" => latest_of(installed_rv.iter()),
         // No local metadata for the installed set; filter via remote cache, then fall back to
         // string naming
         "lts" => {
@@ -728,9 +758,9 @@ pub async fn resolve_installed_version(
                 .into_iter()
                 .filter(|v| v.lts.is_some() && installed.contains(&v.version))
                 .collect();
-            lts_of(&lts_installed).or_else(|| version_matching(&installed_rv, "lts"))
+            lts_of(lts_installed.iter()).or_else(|| version_matching(installed_rv.iter(), "lts"))
         },
-        "nightly" => version_matching(&installed_rv, "nightly"),
+        "nightly" => version_matching(installed_rv.iter(), "nightly"),
         _ => None,
     };
     resolved.ok_or_else(not_found)
@@ -773,46 +803,48 @@ fn parse_version(s: &str) -> Option<semver::Version> {
     semver::Version::parse(s.trim_start_matches(['v', 'V'])).ok()
 }
 
-/// Latest by semver; falls back to the last item when none parse
-fn latest_of(versions: &[RemoteVersion]) -> Option<String> {
-    let mut with_ver: Vec<(&RemoteVersion, semver::Version)> =
-        versions.iter().filter_map(|v| parse_version(&v.version).map(|p| (v, p))).collect();
-    with_ver.sort_by(|a, b| a.1.cmp(&b.1));
-    with_ver
-        .last()
+/// Latest by semver; falls back to the last item when none parse.
+///
+/// Single lazy pass over the candidates: `max_by` instead of collect+sort, no
+/// intermediate Vec. `max_by` keeps the last of equal maxima, matching the
+/// previous stable-sort-then-take-last semantics.
+fn latest_of<'a>(versions: impl Iterator<Item = &'a RemoteVersion> + Clone) -> Option<String> {
+    versions
+        .clone()
+        .filter_map(|v| parse_version(&v.version).map(|p| (v, p)))
+        .max_by(|a, b| a.1.cmp(&b.1))
         .map(|(v, _)| v.version.clone())
         .or_else(|| versions.last().map(|v| v.version.clone()))
 }
 
 /// Newest version with LTS metadata; None if none
-fn lts_of(versions: &[RemoteVersion]) -> Option<String> {
-    let matched: Vec<RemoteVersion> =
-        versions.iter().filter(|v| v.lts.is_some()).cloned().collect();
-    if matched.is_empty() { None } else { latest_of(&matched) }
+fn lts_of<'a>(versions: impl Iterator<Item = &'a RemoteVersion> + Clone) -> Option<String> {
+    latest_of(versions.filter(|v| v.lts.is_some()))
 }
 
 /// Newest entry whose version contains the keyword; None if none
-fn version_matching(versions: &[RemoteVersion], keyword: &str) -> Option<String> {
-    let matched: Vec<RemoteVersion> =
-        versions.iter().filter(|v| v.version.to_lowercase().contains(keyword)).cloned().collect();
-    if matched.is_empty() { None } else { latest_of(&matched) }
+fn version_matching<'a>(
+    versions: impl Iterator<Item = &'a RemoteVersion> + Clone, keyword: &str,
+) -> Option<String> {
+    latest_of(versions.filter(|v| v.version.to_lowercase().contains(keyword)))
 }
 
 /// Newest full version matching a partial prefix (22 / 22.19).
 /// The third condition only allows the request to continue past the version
 /// (e.g. request 2.0 matches version 2), preventing request 22 from matching
 /// version 2
-fn resolve_partial(versions: &[RemoteVersion], prefix: &str) -> Option<String> {
-    let matched: Vec<RemoteVersion> = versions
-        .iter()
-        .filter(|v| {
-            v.version.as_str() == prefix
-                || v.version.starts_with(&format!("{prefix}."))
-                || prefix.starts_with(&format!("{}.", v.version))
-        })
-        .cloned()
-        .collect();
-    if matched.is_empty() { None } else { latest_of(&matched) }
+fn resolve_partial<'a>(
+    versions: impl Iterator<Item = &'a RemoteVersion> + Clone, prefix: &str,
+) -> Option<String> {
+    // Hoisted out of the per-item filter: one allocation, not n
+    let dotted = format!("{prefix}.");
+    latest_of(versions.filter(move |v| {
+        v.version.as_str() == prefix
+            || v.version.starts_with(&dotted)
+            // `strip_prefix` expresses "the request continues past this version"
+            // without a per-item format! allocation
+            || prefix.strip_prefix(v.version.as_str()).is_some_and(|rest| rest.starts_with('.'))
+    }))
 }
 
 /// Call the api source and parse version entries (version_path locate +
@@ -873,12 +905,8 @@ fn did_you_mean_installed(name: &str) -> Vec<String> {
         .map(|entries| {
             entries
                 .flatten()
-                .filter_map(|e| {
-                    let p = e.path();
-                    (p.extension().and_then(|x| x.to_str()) == Some("toml"))
-                        .then(|| p.file_stem().and_then(|s| s.to_str()).map(str::to_string))
-                        .flatten()
-                })
+                .filter(|e| e.path().extension().and_then(OsStr::to_str) == Some("toml"))
+                .filter_map(|e| e.path().file_stem().and_then(OsStr::to_str).map(str::to_string))
                 .collect()
         })
         .unwrap_or_default();
@@ -901,21 +929,23 @@ fn parse_cache_expiry(tool: &str, file_name: &str) -> Option<u64> {
 /// expired cache files. Legacy plain-string-array caches fail to deserialize
 /// and are treated as no cache, upgrading naturally on the next fetch.
 fn load_cached_versions(dir: &Path, tool: &str) -> Option<Vec<RemoteVersion>> {
-    let mut best: Option<(u64, PathBuf)> = None;
-    for entry in fs::read_dir(dir).ok()?.flatten() {
-        let file_name = entry.file_name().to_string_lossy().into_owned();
-        let Some(expires_at) = parse_cache_expiry(tool, &file_name) else {
-            continue;
-        };
-        if expires_at <= unix_now() {
-            let _ = fs::remove_file(entry.path());
-            continue;
-        }
-        if best.as_ref().is_none_or(|(e, _)| expires_at > *e) {
-            best = Some((expires_at, entry.path()));
-        }
-    }
-    let (_, path) = best?;
+    // Single pass: drop expired files inline, keep the longest-lived unexpired
+    // cache (ties resolve to the first entry, as the previous loop did)
+    let (_, path) = fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .filter_map(|entry| {
+            let file_name = entry.file_name().to_string_lossy().into_owned();
+            match parse_cache_expiry(tool, &file_name) {
+                Some(expires_at) if expires_at <= unix_now() => {
+                    let _ = fs::remove_file(entry.path());
+                    None
+                },
+                Some(expires_at) => Some((expires_at, entry.path())),
+                None => None,
+            }
+        })
+        .min_by_key(|(expires_at, _)| std::cmp::Reverse(*expires_at))?;
     serde_json::from_str(&fs::read_to_string(path).ok()?).ok()
 }
 
@@ -934,12 +964,11 @@ fn save_cached_versions(dir: &Path, tool: &str, versions: &[RemoteVersion]) {
     }
     // Overwrite: clean this tool's old caches first to avoid accumulating files
     if let Ok(entries) = fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            let file_name = entry.file_name().to_string_lossy().into_owned();
-            if parse_cache_expiry(tool, &file_name).is_some() {
+        entries.flatten().for_each(|entry| {
+            if parse_cache_expiry(tool, &entry.file_name().to_string_lossy()).is_some() {
                 let _ = fs::remove_file(entry.path());
             }
-        }
+        });
     }
     let expires_at = unix_now().saturating_add(ttl * 3600);
     let path = dir.join(version_cache_file(tool, expires_at));
@@ -989,34 +1018,25 @@ fn extract_versions_from_api(
         None => &root,
     };
 
-    let mut raw: Vec<RemoteVersion> = Vec::new();
-    match target {
-        serde_json::Value::Array(items) => {
-            for item in items {
-                match item {
-                    // Plain string array: no metadata
-                    serde_json::Value::String(s) => {
-                        raw.push(RemoteVersion { version: s.clone(), lts: None })
-                    },
-                    // Object: take the version field, preserve lts metadata
-                    obj @ serde_json::Value::Object(_) => {
-                        if let Some(s) = object_version_field(obj) {
-                            raw.push(RemoteVersion { version: s, lts: object_lts_field(obj) });
-                        }
-                    },
-                    _ => {},
-                }
-            }
-        },
-        serde_json::Value::String(s) => raw.push(RemoteVersion { version: s.clone(), lts: None }),
-        obj @ serde_json::Value::Object(_) => {
-            if let Some(s) = object_version_field(obj) {
-                raw.push(RemoteVersion { version: s, lts: object_lts_field(obj) });
-            }
-        },
-        _ => {},
-    }
+    let raw: Vec<RemoteVersion> = match target {
+        serde_json::Value::Array(items) => items.iter().filter_map(version_entry).collect(),
+        _ => version_entry(target).into_iter().collect(),
+    };
     Ok(raw)
+}
+
+/// One API entry → a version entry: a plain string carries no metadata; an
+/// object takes its version field and preserves lts metadata; other shapes are
+/// skipped
+fn version_entry(value: &serde_json::Value) -> Option<RemoteVersion> {
+    match value {
+        serde_json::Value::String(s) => Some(RemoteVersion { version: s.clone(), lts: None }),
+        serde_json::Value::Object(_) => Some(RemoteVersion {
+            version: object_version_field(value)?,
+            lts: object_lts_field(value),
+        }),
+        _ => None,
+    }
 }
 
 /// Take the LTS codename from an object: only a string value counts as an LTS
@@ -1085,7 +1105,7 @@ fn hash_plan(
 
 /// Fetch and parse the expected checksum trying candidate sources in order
 /// (mirrors → default); errors only when all fail
-async fn fetch_expected_hash(hp: &HashPlan) -> Result<String, UError> {
+async fn fetch_expected_hash(hp: &HashPlan) -> Result<HexDigest, UError> {
     let mut last_err = None;
     for url in &hp.urls {
         match HTTP_CLIENT.get(url).await {
@@ -1118,7 +1138,7 @@ async fn fetch_expected_hash(hp: &HashPlan) -> Result<String, UError> {
 /// pattern, prefer the line of the archive's official name (official checksum
 /// files list many files, so blindly taking the first hex could grab another
 /// platform's hash), finally falling back to the first hex in the file
-fn extract_hash(text: &str, pattern: Option<&str>, filename: &str) -> Result<String, UError> {
+fn extract_hash(text: &str, pattern: Option<&str>, filename: &str) -> Result<HexDigest, UError> {
     if let Some(p) = pattern {
         // Checksum files are multi-line lists (one file per line), so ^$ must anchor by
         // line; enabled automatically when the user's pattern doesn't set (?m)
@@ -1130,10 +1150,12 @@ fn extract_hash(text: &str, pattern: Option<&str>, filename: &str) -> Result<Str
         if let Some(caps) = re.captures(text)
             && let Some(g) = caps.name("hash").or_else(|| caps.get(1)).or_else(|| caps.get(0))
         {
-            let v = g.as_str().trim().to_lowercase();
-            if !v.is_empty() {
-                return Ok(v);
-            }
+            // A pattern capture that is not a digest could never match the computed
+            // hash; failing here reports the bad pattern instead of a confusing
+            // guaranteed-later mismatch
+            return HexDigest::parse(g.as_str()).ok_or_else(|| UError::ChecksumError {
+                message: format!("pattern matched invalid digest '{}'", g.as_str().trim()),
+            });
         }
         return Err(UError::ChecksumError { message: "hash not found in checksum file".into() });
     }
@@ -1142,50 +1164,53 @@ fn extract_hash(text: &str, pattern: Option<&str>, filename: &str) -> Result<Str
     // end of line isn't anchored to tolerate a trailing CRLF \r
     if !filename.is_empty() {
         for len in [64usize, 128] {
-            let re = regex::Regex::new(&format!(
+            // `regex::escape` guarantees the filename cannot break the pattern,
+            // but build failures degrade to the next strategy instead of panicking
+            let Ok(re) = regex::Regex::new(&format!(
                 r"(?im)^[0-9a-f]{{{len}}}\s+\*?{}",
                 regex::escape(filename)
-            ))
-            .expect("valid checksum line regex");
+            )) else {
+                continue;
+            };
             if let Some(m) = re.find(text) {
+                // The pattern anchors `{len}` hex chars at line start, so the token
+                // is a well-formed digest by construction
                 let hash = m.as_str().split_whitespace().next().unwrap_or("");
-                return Ok(hash.to_lowercase());
+                return Ok(HexDigest::from_lowercase_hex(hash));
             }
         }
     }
 
     // Final fallback: first 64/128-bit hex in the file
     for len in [64usize, 128] {
-        let re =
-            regex::Regex::new(&format!(r"(?i)\b[0-9a-f]{{{len}}}\b")).expect("valid hex regex");
+        let Ok(re) = regex::Regex::new(&format!(r"(?i)\b[0-9a-f]{{{len}}}\b")) else {
+            continue;
+        };
         if let Some(m) = re.find(text) {
-            return Ok(m.as_str().to_lowercase());
+            // The pattern matches exactly `{len}` hex chars, well-formed by
+            // construction
+            return Ok(HexDigest::from_lowercase_hex(m.as_str()));
         }
     }
     Err(UError::ChecksumError { message: "no hex checksum found in checksum file".into() })
 }
 
 /// Compute the archive checksum
-pub(crate) fn compute_checksum(path: &Path, algorithm: &str) -> Result<String, UError> {
+pub(crate) fn compute_checksum(path: &Path, algorithm: &str) -> Result<HexDigest, UError> {
     use sha2::{Sha256, Sha512};
     let file = fs::File::open(path)
         .map_err(|source| UError::FileError { path: path.to_path_buf(), source })?;
     // Use chunked update instead of io::copy: hasher's io::Write impl relies on
     // sha2's std feature, which may be unavailable after dependency-tree pruning.
-    let digest: String = match algorithm {
-        "sha256" => hash_file::<Sha256>(file)?,
-        "sha512" => hash_file::<Sha512>(file)?,
-        _ => {
-            return Err(UError::SimpleError(format!(
-                "unsupported checksum algorithm '{algorithm}'"
-            )));
-        },
-    };
-    Ok(digest)
+    match algorithm {
+        "sha256" => hash_file::<Sha256>(file),
+        "sha512" => hash_file::<Sha512>(file),
+        _ => Err(UError::SimpleError(format!("unsupported checksum algorithm '{algorithm}'"))),
+    }
 }
 
 /// Read the file in chunks updating the hash; return the hex digest
-fn hash_file<D: sha2::Digest>(mut file: fs::File) -> Result<String, UError> {
+fn hash_file<D: sha2::Digest>(mut file: fs::File) -> Result<HexDigest, UError> {
     use std::io::Read;
     let mut hasher = D::new();
     let mut buf = [0u8; 64 * 1024];
@@ -1196,11 +1221,18 @@ fn hash_file<D: sha2::Digest>(mut file: fs::File) -> Result<String, UError> {
         }
         hasher.update(&buf[..n]);
     }
-    Ok(hex_encode(&hasher.finalize()))
+    Ok(HexDigest::from_lowercase_hex(&hex_encode(&hasher.finalize())))
 }
 
+/// Lowercase hex encoding; a preallocated buffer avoids per-byte allocations
 fn hex_encode(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(bytes.len() * 2);
+    bytes.iter().for_each(|b| {
+        // fmt::Write for String is infallible
+        let _ = write!(out, "{b:02x}");
+    });
+    out
 }
 
 /// Last path segment of a URL (official artifact name); falls back to the whole
@@ -1211,7 +1243,9 @@ fn url_basename(url: &str) -> String {
 
 /// Extract the archive to dest by extension, stripping the first `strip`
 /// top-level dirs
-pub(crate) fn extract_archive(archive: &Path, dest: &Path, ext: &str, strip: u32) -> Result<(), UError> {
+pub(crate) fn extract_archive(
+    archive: &Path, dest: &Path, ext: &str, strip: u32,
+) -> Result<(), UError> {
     match ext {
         "zip" => extract_zip(archive, dest, strip),
         "tar.gz" | "tgz" => extract_tar_gz(archive, dest, strip),
@@ -1374,52 +1408,52 @@ mod tests {
     #[test]
     fn test_latest_of() {
         let v = versions(&["1.0.0", "2.10.0", "2.9.0", "0.5.0"]);
-        assert_eq!(latest_of(&v).as_deref(), Some("2.10.0"));
+        assert_eq!(latest_of(v.iter()).as_deref(), Some("2.10.0"));
     }
 
     #[test]
     fn test_latest_of_with_prefix() {
         // v-prefixed versions parse and compare too
         let v = versions(&["20.11.0", "20.12.0", "v20.13.0"]);
-        assert_eq!(latest_of(&v).as_deref(), Some("v20.13.0"));
+        assert_eq!(latest_of(v.iter()).as_deref(), Some("v20.13.0"));
     }
 
     #[test]
     fn test_lts_of_uses_metadata() {
         // lts metadata wins: newest is Current, but the newest LTS is 22.12.0
-        let v = vec![
+        let v = [
             RemoteVersion { version: "26.7.0".into(), lts: None },
             RemoteVersion { version: "22.12.0".into(), lts: Some("Jod".into()) },
             RemoteVersion { version: "20.11.0".into(), lts: Some("Iron".into()) },
         ];
-        assert_eq!(lts_of(&v).as_deref(), Some("22.12.0"));
+        assert_eq!(lts_of(v.iter()).as_deref(), Some("22.12.0"));
         // No LTS metadata at all → None (no fallback to latest)
-        assert_eq!(lts_of(&versions(&["1.0.0", "2.0.0"])), None);
+        assert_eq!(lts_of(versions(&["1.0.0", "2.0.0"]).iter()), None);
     }
 
     #[test]
     fn test_version_matching_keyword() {
         // static-source naming-convention fallback: version string contains the keyword
         let v = versions(&["22.0.0", "22.1.0-lts", "22.2.0-lts.1"]);
-        assert_eq!(version_matching(&v, "lts").as_deref(), Some("22.2.0-lts.1"));
-        assert_eq!(version_matching(&v, "nightly"), None);
+        assert_eq!(version_matching(v.iter(), "lts").as_deref(), Some("22.2.0-lts.1"));
+        assert_eq!(version_matching(v.iter(), "nightly"), None);
     }
 
     #[test]
     fn test_resolve_partial_major() {
         let v = versions(&["22.0.0", "22.11.0", "20.11.0"]);
-        assert_eq!(resolve_partial(&v, "22").as_deref(), Some("22.11.0"));
-        assert_eq!(resolve_partial(&v, "20").as_deref(), Some("20.11.0"));
-        assert_eq!(resolve_partial(&v, "18"), None);
+        assert_eq!(resolve_partial(v.iter(), "22").as_deref(), Some("22.11.0"));
+        assert_eq!(resolve_partial(v.iter(), "20").as_deref(), Some("20.11.0"));
+        assert_eq!(resolve_partial(v.iter(), "18"), None);
     }
 
     #[test]
     fn test_resolve_partial_minor() {
         let v = versions(&["22.0.0", "22.0.1", "22.1.0"]);
-        assert_eq!(resolve_partial(&v, "22.0").as_deref(), Some("22.0.1"));
+        assert_eq!(resolve_partial(v.iter(), "22.0").as_deref(), Some("22.0.1"));
         // node@22.19 → newest in 22.19.z
         let v = versions(&["22.19.0", "22.19.3", "22.20.0"]);
-        assert_eq!(resolve_partial(&v, "22.19").as_deref(), Some("22.19.3"));
+        assert_eq!(resolve_partial(v.iter(), "22.19").as_deref(), Some("22.19.3"));
     }
 
     /// Request 22 must not match version 2 (a third-condition bug in the old
@@ -1428,10 +1462,10 @@ mod tests {
     fn test_resolve_partial_no_false_major_match() {
         let v = versions(&["2.0.0", "20.0.0"]);
         // "22" doesn't match "2" (request doesn't continue past "2.")
-        assert_eq!(resolve_partial(&v, "22"), None);
+        assert_eq!(resolve_partial(v.iter(), "22"), None);
         // Request 2.0 may match dot-less version 2 (request continues past the version)
         let v2 = versions(&["2", "3.0.0"]);
-        assert_eq!(resolve_partial(&v2, "2.0").as_deref(), Some("2"));
+        assert_eq!(resolve_partial(v2.iter(), "2.0").as_deref(), Some("2"));
     }
 
     /// Full round-trip of the recorded checksum with local verification:
@@ -1592,17 +1626,20 @@ bin_dir = "bin"
 
         let digest = compute_checksum(&file, "sha256").unwrap();
         // sha256 of "hello"
-        assert_eq!(digest, "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824");
+        assert_eq!(
+            digest.as_str(),
+            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+        );
     }
 
     #[test]
     fn test_extract_hash_pattern() {
         let text = "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824  node.exe";
         let out = extract_hash(text, Some(r"(?P<hash>[0-9a-f]{64})"), "node.exe").unwrap();
-        assert_eq!(out.len(), 64);
+        assert_eq!(out.as_str().len(), 64);
         // Without a pattern, match the line by archive file name
         let out2 = extract_hash(text, None, "node.exe").unwrap();
-        assert_eq!(out2.len(), 64);
+        assert_eq!(out2.as_str().len(), 64);
     }
 
     /// SHASUMS256.txt real shape: multiple lines, target not first,
@@ -1616,7 +1653,10 @@ bin_dir = "bin"
 ";
         let pattern = r"^([a-f0-9]{64})\s+.*node-v24.19.0-win-x64.zip$";
         let out = extract_hash(text, Some(pattern), "node-v24.19.0-win-x64.zip").unwrap();
-        assert_eq!(out, "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824");
+        assert_eq!(
+            out.as_str(),
+            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+        );
     }
 
     /// No pattern + multi-file lists: must take the line by archive file name,
@@ -1629,12 +1669,15 @@ bin_dir = "bin"
 2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824  node-v24.19.0-win-x64.zip
 ";
         let out = extract_hash(text, None, "node-v24.19.0-win-x64.zip").unwrap();
-        assert_eq!(out, "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824");
+        assert_eq!(
+            out.as_str(),
+            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+        );
         // With no matching line for the file name, fall back to the first hex in the
         // file
         let fallback = extract_hash(text, None, "no-such-file.zip").unwrap();
-        assert_eq!(fallback.len(), 64);
-        assert!(fallback.starts_with("1111"));
+        assert_eq!(fallback.as_str().len(), 64);
+        assert!(fallback.as_str().starts_with("1111"));
     }
 
     #[test]
@@ -1754,7 +1797,17 @@ bin_dir = "bin"
 
         // Re-downloading the same archive refreshes its download time
         std::thread::sleep(Duration::from_secs(1));
-        record_archive(&archive, 48, Some(("sha256", "abc123")));
+        record_archive(
+            &archive,
+            48,
+            Some((
+                "sha256",
+                &HexDigest::parse(
+                    "abc123abc123abc123abc123abc123abc123abc123abc123abc123abc123abc1",
+                )
+                .unwrap(),
+            )),
+        );
         let second =
             load_records(&tool_dir).archives.get("node-22.0.0-win-x64.zip").cloned().unwrap();
         assert_eq!(second.ttl_hours, 48);

@@ -9,11 +9,11 @@ pub mod platform;
 pub mod plugin;
 pub mod shell;
 pub mod suggest;
-pub mod upgrade;
 mod types;
+pub mod upgrade;
 
 pub use types::*;
-use versions::Versioning;
+use versions::{Mess, Versioning};
 
 use crate::Lazy;
 
@@ -22,5 +22,9 @@ pub(crate) static VERSION: Lazy<Versioning> = Lazy::new(|| {
     if cfg!(debug_assertions) {
         v.push_str("-DEBUG");
     }
-    Versioning::new(&v).unwrap()
+    // `env!("CARGO_PKG_VERSION")` is a compile-time constant guaranteed
+    // well-formed by cargo, so the fallback arm is unreachable; `Mess::default()`
+    // keeps it panic-free by construction instead of trusting that invariant
+    // with an `unwrap`.
+    Versioning::new(&v).unwrap_or_else(|| Versioning::Complex(Mess::default()))
 });

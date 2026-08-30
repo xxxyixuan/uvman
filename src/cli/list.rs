@@ -43,7 +43,8 @@ pub struct List {
     #[clap(short = 'r', long, requires = "tool")]
     pub remote: bool,
 
-    /// Print the full remote list directly instead of paging (requires --remote)
+    /// Print the full remote list directly instead of paging (requires
+    /// --remote)
     #[clap(short = 'a', long, requires = "remote")]
     pub all: bool,
 
