@@ -8,7 +8,6 @@ pub enum SingleOrArray<T> {
 }
 
 impl<T> SingleOrArray<T> {
-    #[allow(dead_code)] // used by deserialization helpers
     pub fn items(&self) -> Vec<&T> {
         match self {
             SingleOrArray::Single(v) => vec![v],
@@ -16,7 +15,7 @@ impl<T> SingleOrArray<T> {
         }
     }
 
-    #[allow(dead_code)] // used by deserialization helpers
+    #[allow(dead_code)] // reserved: consuming converters in deserialization helpers
     pub fn into_vec(self) -> Vec<T> {
         match self {
             SingleOrArray::Single(v) => vec![v],

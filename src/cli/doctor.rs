@@ -302,7 +302,8 @@ strip = 1
 bin_dir = "bin"
 "#;
 
-    /// Doctor scans by subdir name; keep the list in sync with paths::layout_dirs
+    /// Doctor scans by subdir name; keep the list in sync with
+    /// paths::layout_dirs
     #[test]
     fn test_layout_subdirs_match_paths() {
         let names: Vec<String> = paths::layout_dirs()
