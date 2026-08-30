@@ -1,3 +1,7 @@
+# Release tags (v*) are maintained exclusively on the `release` branch:
+# its history is a linear record of tagged release versions. `main` carries
+# only development history (no Release commits). Pushing a v* tag triggers
+# this build regardless of which branch it is created on.
 name: release
 
 on:
