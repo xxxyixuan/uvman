@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::PathBuf;
+use std::sync::LazyLock;
 
 use crate::core::error::UError;
 
@@ -15,7 +16,7 @@ fn executable_dir() -> Option<PathBuf> {
     std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf()))
 }
 
-/// uvman data root dir (common parent of tools/plugins/cache/config/logs).
+/// Compute the uvman data root (common parent of tools/plugins/cache/config/logs).
 ///
 /// Platform defaults:
 /// - **Windows**: the executable's directory by default (portable); data lives
@@ -23,7 +24,7 @@ fn executable_dir() -> Option<PathBuf> {
 ///   overrides.
 /// - **Linux/macOS**: fixed to `$HOME/.uvman`, ignoring `UVMAN_HOME`, following
 ///   Unix conventions (user-level tool data independent of the binary).
-pub fn uvman_home() -> PathBuf {
+fn compute_home() -> PathBuf {
     // Only unit tests (cfg(test)) use test/ to isolate test data from real user
     // data. Do NOT extend to debug_assertions: a debug binary can be added to
     // PATH as a real tool, and a relative home would create test/ anywhere the
@@ -46,6 +47,15 @@ pub fn uvman_home() -> PathBuf {
 
     // Linux/macOS: fixed ~/.uvman, ignore UVMAN_HOME
     user_home().join(".uvman")
+}
+
+/// Resolved once: nothing in the process mutates `UVMAN_HOME` or re-execs, so
+/// every path helper shares one root instead of re-reading env/current_exe.
+static HOME: LazyLock<PathBuf> = LazyLock::new(compute_home);
+
+/// uvman data root dir (common parent of tools/plugins/cache/config/logs).
+pub fn uvman_home() -> PathBuf {
+    HOME.clone()
 }
 
 pub fn plugins_dir() -> PathBuf {
@@ -107,13 +117,13 @@ pub fn layout_dirs() -> Vec<PathBuf> {
 
 /// Idempotently create the UVMAN_HOME layout; silently skip existing dirs
 pub fn ensure_layout() -> Result<(), UError> {
-    for dir in layout_dirs() {
+    layout_dirs().into_iter().try_for_each(|dir| {
         if !dir.exists() {
             fs::create_dir_all(&dir)
                 .map_err(|source| UError::FileError { path: dir.clone(), source })?;
         }
-    }
-    Ok(())
+        Ok(())
+    })
 }
 
 #[cfg(test)]

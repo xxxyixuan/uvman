@@ -13,7 +13,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use indicatif::ProgressBar;
 use serde::{Deserialize, Serialize};
 
-use crate::core::SingleOrArray;
 use crate::core::config::GLOBAL_CONFIG;
 use crate::core::error::UError;
 use crate::core::http::HTTP_CLIENT;
@@ -125,14 +124,13 @@ pub async fn plan(name: &str, version: Option<&str>) -> Result<InstallPlan, UErr
 /// priority) → plugin mirrors → plugin default; keep only the first occurrence
 /// of duplicates
 fn merged_sources(name: &str, plugin: &ToolPlugin) -> Vec<String> {
-    let mut sources: Vec<String> = Vec::new();
-    if let Some(global) = GLOBAL_CONFIG.registry.get(name) {
-        match global {
-            SingleOrArray::Single(s) => sources.push(s.clone()),
-            SingleOrArray::Array(list) => sources.extend(list.iter().cloned()),
-        }
-    }
+    let mut sources: Vec<String> = GLOBAL_CONFIG
+        .registry
+        .get(name)
+        .map(|entry| entry.items().into_iter().cloned().collect())
+        .unwrap_or_default();
     for s in plugin.registry.sources() {
+        // Candidate lists are a handful of entries, so a linear scan beats hashing
         if !sources.contains(&s) {
             sources.push(s);
         }
@@ -642,7 +640,7 @@ async fn resolve_version(
 
     // Partial version (e.g. 22 / 22.19) → latest matching the prefix
     if is_partial_version(request) {
-        return resolve_partial(&versions, request).ok_or_else(|| UError::VersionNotFound {
+        return resolve_partial(versions.iter(), request).ok_or_else(|| UError::VersionNotFound {
             tool: name.to_string(),
             version: request.to_string(),
         });
@@ -651,11 +649,11 @@ async fn resolve_version(
     // Aliases don't fall back: error explicitly on no match, avoiding silently
     // installing the wrong line
     let resolved = match request {
-        "latest" => latest_of(&versions),
+        "latest" => latest_of(versions.iter()),
         // Prefer metadata (api source); fall back to string naming convention (static source, e.g.
         // "22.1.0-lts")
-        "lts" => lts_of(&versions).or_else(|| version_matching(&versions, "lts")),
-        "nightly" => version_matching(&versions, "nightly"),
+        "lts" => lts_of(versions.iter()).or_else(|| version_matching(versions.iter(), "lts")),
+        "nightly" => version_matching(versions.iter(), "nightly"),
         _ => None,
     };
     resolved.ok_or_else(|| UError::VersionNotFound {
@@ -699,11 +697,11 @@ pub async fn resolve_installed_version(
     }
 
     if is_partial_version(request) {
-        return resolve_partial(&installed_rv, request).ok_or_else(not_found);
+        return resolve_partial(installed_rv.iter(), request).ok_or_else(not_found);
     }
 
     let resolved = match request {
-        "latest" => latest_of(&installed_rv),
+        "latest" => latest_of(installed_rv.iter()),
         // No local metadata for the installed set; filter via remote cache, then fall back to
         // string naming
         "lts" => {
@@ -712,9 +710,9 @@ pub async fn resolve_installed_version(
                 .into_iter()
                 .filter(|v| v.lts.is_some() && installed.contains(&v.version))
                 .collect();
-            lts_of(&lts_installed).or_else(|| version_matching(&installed_rv, "lts"))
+            lts_of(lts_installed.iter()).or_else(|| version_matching(installed_rv.iter(), "lts"))
         },
-        "nightly" => version_matching(&installed_rv, "nightly"),
+        "nightly" => version_matching(installed_rv.iter(), "nightly"),
         _ => None,
     };
     resolved.ok_or_else(not_found)
@@ -757,46 +755,48 @@ fn parse_version(s: &str) -> Option<semver::Version> {
     semver::Version::parse(s.trim_start_matches(['v', 'V'])).ok()
 }
 
-/// Latest by semver; falls back to the last item when none parse
-fn latest_of(versions: &[RemoteVersion]) -> Option<String> {
-    let mut with_ver: Vec<(&RemoteVersion, semver::Version)> =
-        versions.iter().filter_map(|v| parse_version(&v.version).map(|p| (v, p))).collect();
-    with_ver.sort_by(|a, b| a.1.cmp(&b.1));
-    with_ver
-        .last()
+/// Latest by semver; falls back to the last item when none parse.
+///
+/// Single lazy pass over the candidates: `max_by` instead of collect+sort, no
+/// intermediate Vec. `max_by` keeps the last of equal maxima, matching the
+/// previous stable-sort-then-take-last semantics.
+fn latest_of<'a>(versions: impl Iterator<Item = &'a RemoteVersion> + Clone) -> Option<String> {
+    versions
+        .clone()
+        .filter_map(|v| parse_version(&v.version).map(|p| (v, p)))
+        .max_by(|a, b| a.1.cmp(&b.1))
         .map(|(v, _)| v.version.clone())
         .or_else(|| versions.last().map(|v| v.version.clone()))
 }
 
 /// Newest version with LTS metadata; None if none
-fn lts_of(versions: &[RemoteVersion]) -> Option<String> {
-    let matched: Vec<RemoteVersion> =
-        versions.iter().filter(|v| v.lts.is_some()).cloned().collect();
-    if matched.is_empty() { None } else { latest_of(&matched) }
+fn lts_of<'a>(versions: impl Iterator<Item = &'a RemoteVersion> + Clone) -> Option<String> {
+    latest_of(versions.filter(|v| v.lts.is_some()))
 }
 
 /// Newest entry whose version contains the keyword; None if none
-fn version_matching(versions: &[RemoteVersion], keyword: &str) -> Option<String> {
-    let matched: Vec<RemoteVersion> =
-        versions.iter().filter(|v| v.version.to_lowercase().contains(keyword)).cloned().collect();
-    if matched.is_empty() { None } else { latest_of(&matched) }
+fn version_matching<'a>(
+    versions: impl Iterator<Item = &'a RemoteVersion> + Clone, keyword: &str,
+) -> Option<String> {
+    latest_of(versions.filter(|v| v.version.to_lowercase().contains(keyword)))
 }
 
 /// Newest full version matching a partial prefix (22 / 22.19).
 /// The third condition only allows the request to continue past the version
 /// (e.g. request 2.0 matches version 2), preventing request 22 from matching
 /// version 2
-fn resolve_partial(versions: &[RemoteVersion], prefix: &str) -> Option<String> {
-    let matched: Vec<RemoteVersion> = versions
-        .iter()
-        .filter(|v| {
-            v.version.as_str() == prefix
-                || v.version.starts_with(&format!("{prefix}."))
-                || prefix.starts_with(&format!("{}.", v.version))
-        })
-        .cloned()
-        .collect();
-    if matched.is_empty() { None } else { latest_of(&matched) }
+fn resolve_partial<'a>(
+    versions: impl Iterator<Item = &'a RemoteVersion> + Clone, prefix: &str,
+) -> Option<String> {
+    // Hoisted out of the per-item filter: one allocation, not n
+    let dotted = format!("{prefix}.");
+    latest_of(versions.filter(move |v| {
+        v.version.as_str() == prefix
+            || v.version.starts_with(&dotted)
+            // `strip_prefix` expresses "the request continues past this version"
+            // without a per-item format! allocation
+            || prefix.strip_prefix(v.version.as_str()).is_some_and(|rest| rest.starts_with('.'))
+    }))
 }
 
 /// Call the api source and parse version entries (version_path locate +
@@ -857,12 +857,8 @@ fn did_you_mean_installed(name: &str) -> Vec<String> {
         .map(|entries| {
             entries
                 .flatten()
-                .filter_map(|e| {
-                    let p = e.path();
-                    (p.extension().and_then(|x| x.to_str()) == Some("toml"))
-                        .then(|| p.file_stem().and_then(|s| s.to_str()).map(str::to_string))
-                        .flatten()
-                })
+                .filter(|e| e.path().extension().and_then(OsStr::to_str) == Some("toml"))
+                .filter_map(|e| e.path().file_stem().and_then(OsStr::to_str).map(str::to_string))
                 .collect()
         })
         .unwrap_or_default();
@@ -885,21 +881,20 @@ fn parse_cache_expiry(tool: &str, file_name: &str) -> Option<u64> {
 /// expired cache files. Legacy plain-string-array caches fail to deserialize
 /// and are treated as no cache, upgrading naturally on the next fetch.
 fn load_cached_versions(dir: &Path, tool: &str) -> Option<Vec<RemoteVersion>> {
-    let mut best: Option<(u64, PathBuf)> = None;
-    for entry in fs::read_dir(dir).ok()?.flatten() {
+    // Single pass: drop expired files inline, keep the longest-lived unexpired
+    // cache (ties resolve to the first entry, as the previous loop did)
+    let (_, path) = fs::read_dir(dir).ok()?.flatten().filter_map(|entry| {
         let file_name = entry.file_name().to_string_lossy().into_owned();
-        let Some(expires_at) = parse_cache_expiry(tool, &file_name) else {
-            continue;
-        };
-        if expires_at <= unix_now() {
-            let _ = fs::remove_file(entry.path());
-            continue;
+        match parse_cache_expiry(tool, &file_name) {
+            Some(expires_at) if expires_at <= unix_now() => {
+                let _ = fs::remove_file(entry.path());
+                None
+            },
+            Some(expires_at) => Some((expires_at, entry.path())),
+            None => None,
         }
-        if best.as_ref().is_none_or(|(e, _)| expires_at > *e) {
-            best = Some((expires_at, entry.path()));
-        }
-    }
-    let (_, path) = best?;
+    })
+    .min_by_key(|(expires_at, _)| std::cmp::Reverse(*expires_at))?;
     serde_json::from_str(&fs::read_to_string(path).ok()?).ok()
 }
 
@@ -918,12 +913,11 @@ fn save_cached_versions(dir: &Path, tool: &str, versions: &[RemoteVersion]) {
     }
     // Overwrite: clean this tool's old caches first to avoid accumulating files
     if let Ok(entries) = fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            let file_name = entry.file_name().to_string_lossy().into_owned();
-            if parse_cache_expiry(tool, &file_name).is_some() {
+        entries.flatten().for_each(|entry| {
+            if parse_cache_expiry(tool, &entry.file_name().to_string_lossy()).is_some() {
                 let _ = fs::remove_file(entry.path());
             }
-        }
+        });
     }
     let expires_at = unix_now().saturating_add(ttl * 3600);
     let path = dir.join(version_cache_file(tool, expires_at));
@@ -973,34 +967,24 @@ fn extract_versions_from_api(
         None => &root,
     };
 
-    let mut raw: Vec<RemoteVersion> = Vec::new();
-    match target {
-        serde_json::Value::Array(items) => {
-            for item in items {
-                match item {
-                    // Plain string array: no metadata
-                    serde_json::Value::String(s) => {
-                        raw.push(RemoteVersion { version: s.clone(), lts: None })
-                    },
-                    // Object: take the version field, preserve lts metadata
-                    obj @ serde_json::Value::Object(_) => {
-                        if let Some(s) = object_version_field(obj) {
-                            raw.push(RemoteVersion { version: s, lts: object_lts_field(obj) });
-                        }
-                    },
-                    _ => {},
-                }
-            }
-        },
-        serde_json::Value::String(s) => raw.push(RemoteVersion { version: s.clone(), lts: None }),
-        obj @ serde_json::Value::Object(_) => {
-            if let Some(s) = object_version_field(obj) {
-                raw.push(RemoteVersion { version: s, lts: object_lts_field(obj) });
-            }
-        },
-        _ => {},
-    }
+    let raw: Vec<RemoteVersion> = match target {
+        serde_json::Value::Array(items) => items.iter().filter_map(version_entry).collect(),
+        _ => version_entry(target).into_iter().collect(),
+    };
     Ok(raw)
+}
+
+/// One API entry → a version entry: a plain string carries no metadata; an
+/// object takes its version field and preserves lts metadata; other shapes are
+/// skipped
+fn version_entry(value: &serde_json::Value) -> Option<RemoteVersion> {
+    match value {
+        serde_json::Value::String(s) => Some(RemoteVersion { version: s.clone(), lts: None }),
+        serde_json::Value::Object(_) => {
+            Some(RemoteVersion { version: object_version_field(value)?, lts: object_lts_field(value) })
+        },
+        _ => None,
+    }
 }
 
 /// Take the LTS codename from an object: only a string value counts as an LTS
@@ -1187,8 +1171,15 @@ fn hash_file<D: sha2::Digest>(mut file: fs::File) -> Result<String, UError> {
     Ok(hex_encode(&hasher.finalize()))
 }
 
+/// Lowercase hex encoding; a preallocated buffer avoids per-byte allocations
 fn hex_encode(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(bytes.len() * 2);
+    bytes.iter().for_each(|b| {
+        // fmt::Write for String is infallible
+        let _ = write!(out, "{b:02x}");
+    });
+    out
 }
 
 /// Last path segment of a URL (official artifact name); falls back to the whole
@@ -1362,52 +1353,52 @@ mod tests {
     #[test]
     fn test_latest_of() {
         let v = versions(&["1.0.0", "2.10.0", "2.9.0", "0.5.0"]);
-        assert_eq!(latest_of(&v).as_deref(), Some("2.10.0"));
+        assert_eq!(latest_of(v.iter()).as_deref(), Some("2.10.0"));
     }
 
     #[test]
     fn test_latest_of_with_prefix() {
         // v-prefixed versions parse and compare too
         let v = versions(&["20.11.0", "20.12.0", "v20.13.0"]);
-        assert_eq!(latest_of(&v).as_deref(), Some("v20.13.0"));
+        assert_eq!(latest_of(v.iter()).as_deref(), Some("v20.13.0"));
     }
 
     #[test]
     fn test_lts_of_uses_metadata() {
         // lts metadata wins: newest is Current, but the newest LTS is 22.12.0
-        let v = vec![
+        let v = [
             RemoteVersion { version: "26.7.0".into(), lts: None },
             RemoteVersion { version: "22.12.0".into(), lts: Some("Jod".into()) },
             RemoteVersion { version: "20.11.0".into(), lts: Some("Iron".into()) },
         ];
-        assert_eq!(lts_of(&v).as_deref(), Some("22.12.0"));
+        assert_eq!(lts_of(v.iter()).as_deref(), Some("22.12.0"));
         // No LTS metadata at all → None (no fallback to latest)
-        assert_eq!(lts_of(&versions(&["1.0.0", "2.0.0"])), None);
+        assert_eq!(lts_of(versions(&["1.0.0", "2.0.0"]).iter()), None);
     }
 
     #[test]
     fn test_version_matching_keyword() {
         // static-source naming-convention fallback: version string contains the keyword
         let v = versions(&["22.0.0", "22.1.0-lts", "22.2.0-lts.1"]);
-        assert_eq!(version_matching(&v, "lts").as_deref(), Some("22.2.0-lts.1"));
-        assert_eq!(version_matching(&v, "nightly"), None);
+        assert_eq!(version_matching(v.iter(), "lts").as_deref(), Some("22.2.0-lts.1"));
+        assert_eq!(version_matching(v.iter(), "nightly"), None);
     }
 
     #[test]
     fn test_resolve_partial_major() {
         let v = versions(&["22.0.0", "22.11.0", "20.11.0"]);
-        assert_eq!(resolve_partial(&v, "22").as_deref(), Some("22.11.0"));
-        assert_eq!(resolve_partial(&v, "20").as_deref(), Some("20.11.0"));
-        assert_eq!(resolve_partial(&v, "18"), None);
+        assert_eq!(resolve_partial(v.iter(), "22").as_deref(), Some("22.11.0"));
+        assert_eq!(resolve_partial(v.iter(), "20").as_deref(), Some("20.11.0"));
+        assert_eq!(resolve_partial(v.iter(), "18"), None);
     }
 
     #[test]
     fn test_resolve_partial_minor() {
         let v = versions(&["22.0.0", "22.0.1", "22.1.0"]);
-        assert_eq!(resolve_partial(&v, "22.0").as_deref(), Some("22.0.1"));
+        assert_eq!(resolve_partial(v.iter(), "22.0").as_deref(), Some("22.0.1"));
         // node@22.19 → newest in 22.19.z
         let v = versions(&["22.19.0", "22.19.3", "22.20.0"]);
-        assert_eq!(resolve_partial(&v, "22.19").as_deref(), Some("22.19.3"));
+        assert_eq!(resolve_partial(v.iter(), "22.19").as_deref(), Some("22.19.3"));
     }
 
     /// Request 22 must not match version 2 (a third-condition bug in the old
@@ -1416,10 +1407,10 @@ mod tests {
     fn test_resolve_partial_no_false_major_match() {
         let v = versions(&["2.0.0", "20.0.0"]);
         // "22" doesn't match "2" (request doesn't continue past "2.")
-        assert_eq!(resolve_partial(&v, "22"), None);
+        assert_eq!(resolve_partial(v.iter(), "22"), None);
         // Request 2.0 may match dot-less version 2 (request continues past the version)
         let v2 = versions(&["2", "3.0.0"]);
-        assert_eq!(resolve_partial(&v2, "2.0").as_deref(), Some("2"));
+        assert_eq!(resolve_partial(v2.iter(), "2.0").as_deref(), Some("2"));
     }
 
     /// Full round-trip of the recorded checksum with local verification:
