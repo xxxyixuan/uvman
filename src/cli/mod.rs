@@ -4,6 +4,7 @@ mod install;
 mod list;
 mod plugin;
 mod self_update;
+mod uninstall;
 mod use_;
 pub(crate) mod version;
 
@@ -33,6 +34,7 @@ pub enum Commands {
     Version(version::Version),
     Plugin(plugin::Plugin),
     Install(install::Install),
+    Uninstall(uninstall::Uninstall),
     List(list::List),
     Use(use_::Use),
     /// Internal evaluator driven by activate scripts; not user-facing
@@ -48,6 +50,7 @@ impl Commands {
             Commands::Version(cmd) => cmd.run().await,
             Commands::Plugin(cmd) => cmd.run().await,
             Commands::Install(cmd) => cmd.run().await,
+            Commands::Uninstall(cmd) => cmd.run().await,
             Commands::List(cmd) => cmd.run().await,
             Commands::Use(cmd) => cmd.run().await,
             Commands::Env(cmd) => cmd.run(),
