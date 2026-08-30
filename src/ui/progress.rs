@@ -21,7 +21,11 @@ pub fn finish_marked(pb: &ProgressBar, ok: bool, msg: &str) {
     pb.set_style(spinner_style("{msg}"));
     let mark = if ok { "✔" } else { "✖" };
     let line = format!("{mark} {msg}");
-    let styled = if ok { crate::ui::style::ogreen(line).to_string() } else { crate::ui::style::ered(line).to_string() };
+    let styled = if ok {
+        crate::ui::style::ogreen(line).to_string()
+    } else {
+        crate::ui::style::ered(line).to_string()
+    };
     pb.set_message(styled);
     pb.finish();
 }

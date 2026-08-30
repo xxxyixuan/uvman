@@ -10,10 +10,12 @@ use crate::core::http::HTTP_CLIENT;
 pub const REPO: &str = "xxxyixuan/uvman";
 
 /// Latest stable release (excludes pre-releases by GitHub's semantics)
-const RELEASES_LATEST_API_URL: &str = "https://api.github.com/repos/xxxyixuan/uvman/releases/latest";
+const RELEASES_LATEST_API_URL: &str =
+    "https://api.github.com/repos/xxxyixuan/uvman/releases/latest";
 
 /// Release list (needed for --prerelease, where /latest is not enough)
-const RELEASES_LIST_API_URL: &str = "https://api.github.com/repos/xxxyixuan/uvman/releases?per_page=100";
+const RELEASES_LIST_API_URL: &str =
+    "https://api.github.com/repos/xxxyixuan/uvman/releases?per_page=100";
 
 /// Retries for the self-update check: unlike the best-effort hint in
 /// `uvman version`, self-update reports fetch failures to the user
@@ -38,7 +40,8 @@ pub async fn fetch_latest_release(prerelease: bool) -> Result<LatestRelease, UEr
 }
 
 async fn fetch_latest_stable() -> Result<LatestRelease, UError> {
-    let text = HTTP_CLIENT.fetch_text(RELEASES_LATEST_API_URL, FETCH_RETRIES, RETRY_DELAY_SECS).await?;
+    let text =
+        HTTP_CLIENT.fetch_text(RELEASES_LATEST_API_URL, FETCH_RETRIES, RETRY_DELAY_SECS).await?;
     let release: serde_json::Value =
         serde_json::from_str(&text).map_err(|source| UError::JsonError { source })?;
     let tag = release
@@ -54,7 +57,8 @@ async fn fetch_latest_stable() -> Result<LatestRelease, UError> {
 /// With --prerelease the /latest endpoint is not enough (it never returns
 /// pre-releases), so list all releases and pick the highest semver.
 async fn fetch_latest_including_prereleases() -> Result<LatestRelease, UError> {
-    let text = HTTP_CLIENT.fetch_text(RELEASES_LIST_API_URL, FETCH_RETRIES, RETRY_DELAY_SECS).await?;
+    let text =
+        HTTP_CLIENT.fetch_text(RELEASES_LIST_API_URL, FETCH_RETRIES, RETRY_DELAY_SECS).await?;
     let releases: Vec<serde_json::Value> =
         serde_json::from_str(&text).map_err(|source| UError::JsonError { source })?;
     releases

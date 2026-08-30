@@ -16,7 +16,8 @@ fn executable_dir() -> Option<PathBuf> {
     std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf()))
 }
 
-/// Compute the uvman data root (common parent of tools/plugins/cache/config/logs).
+/// Compute the uvman data root (common parent of
+/// tools/plugins/cache/config/logs).
 ///
 /// Platform defaults:
 /// - **Windows**: the executable's directory by default (portable); data lives

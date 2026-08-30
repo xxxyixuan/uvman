@@ -76,16 +76,15 @@ impl HexDigest {
     /// Validate and normalize (lowercase) a raw digest string.
     pub(crate) fn parse(raw: &str) -> Option<Self> {
         let normalized = raw.trim().to_lowercase();
-        (matches!(normalized.len(), 64 | 128)
-            && normalized.bytes().all(|b| b.is_ascii_hexdigit()))
-        .then_some(Self(normalized))
+        (matches!(normalized.len(), 64 | 128) && normalized.bytes().all(|b| b.is_ascii_hexdigit()))
+            .then_some(Self(normalized))
     }
 
     /// Wrap a digest that is already well-formed.
     ///
     /// Valid by construction: callers pass either the output of `hex_encode`
-    /// over a sha2 finalize (always 64/128 lowercase hex) or a token captured by
-    /// a regex anchoring exactly `{64,128}` hex chars.
+    /// over a sha2 finalize (always 64/128 lowercase hex) or a token captured
+    /// by a regex anchoring exactly `{64,128}` hex chars.
     fn from_lowercase_hex(raw: &str) -> Self {
         debug_assert!(Self::parse(raw).is_some(), "digest must be pre-validated: {raw}");
         Self(raw.to_lowercase())
@@ -410,7 +409,9 @@ fn record_archive(archive: &Path, ttl_hours: u64, hash: Option<(&str, &HexDigest
         return;
     };
     let (algorithm, expected) = match hash {
-        Some((algorithm, expected)) => (Some(algorithm.to_string()), Some(expected.as_str().to_string())),
+        Some((algorithm, expected)) => {
+            (Some(algorithm.to_string()), Some(expected.as_str().to_string()))
+        },
         None => (None, None),
     };
     let mut records = load_records(tool_dir);
@@ -930,18 +931,21 @@ fn parse_cache_expiry(tool: &str, file_name: &str) -> Option<u64> {
 fn load_cached_versions(dir: &Path, tool: &str) -> Option<Vec<RemoteVersion>> {
     // Single pass: drop expired files inline, keep the longest-lived unexpired
     // cache (ties resolve to the first entry, as the previous loop did)
-    let (_, path) = fs::read_dir(dir).ok()?.flatten().filter_map(|entry| {
-        let file_name = entry.file_name().to_string_lossy().into_owned();
-        match parse_cache_expiry(tool, &file_name) {
-            Some(expires_at) if expires_at <= unix_now() => {
-                let _ = fs::remove_file(entry.path());
-                None
-            },
-            Some(expires_at) => Some((expires_at, entry.path())),
-            None => None,
-        }
-    })
-    .min_by_key(|(expires_at, _)| std::cmp::Reverse(*expires_at))?;
+    let (_, path) = fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .filter_map(|entry| {
+            let file_name = entry.file_name().to_string_lossy().into_owned();
+            match parse_cache_expiry(tool, &file_name) {
+                Some(expires_at) if expires_at <= unix_now() => {
+                    let _ = fs::remove_file(entry.path());
+                    None
+                },
+                Some(expires_at) => Some((expires_at, entry.path())),
+                None => None,
+            }
+        })
+        .min_by_key(|(expires_at, _)| std::cmp::Reverse(*expires_at))?;
     serde_json::from_str(&fs::read_to_string(path).ok()?).ok()
 }
 
@@ -1027,9 +1031,10 @@ fn extract_versions_from_api(
 fn version_entry(value: &serde_json::Value) -> Option<RemoteVersion> {
     match value {
         serde_json::Value::String(s) => Some(RemoteVersion { version: s.clone(), lts: None }),
-        serde_json::Value::Object(_) => {
-            Some(RemoteVersion { version: object_version_field(value)?, lts: object_lts_field(value) })
-        },
+        serde_json::Value::Object(_) => Some(RemoteVersion {
+            version: object_version_field(value)?,
+            lts: object_lts_field(value),
+        }),
         _ => None,
     }
 }
@@ -1148,8 +1153,8 @@ fn extract_hash(text: &str, pattern: Option<&str>, filename: &str) -> Result<Hex
             // A pattern capture that is not a digest could never match the computed
             // hash; failing here reports the bad pattern instead of a confusing
             // guaranteed-later mismatch
-            return HexDigest::parse(g.as_str()).ok_or_else(|| {
-                UError::ChecksumError { message: format!("pattern matched invalid digest '{}'", g.as_str().trim()) }
+            return HexDigest::parse(g.as_str()).ok_or_else(|| UError::ChecksumError {
+                message: format!("pattern matched invalid digest '{}'", g.as_str().trim()),
             });
         }
         return Err(UError::ChecksumError { message: "hash not found in checksum file".into() });
@@ -1200,9 +1205,7 @@ pub(crate) fn compute_checksum(path: &Path, algorithm: &str) -> Result<HexDigest
     match algorithm {
         "sha256" => hash_file::<Sha256>(file),
         "sha512" => hash_file::<Sha512>(file),
-        _ => Err(UError::SimpleError(format!(
-            "unsupported checksum algorithm '{algorithm}'"
-        ))),
+        _ => Err(UError::SimpleError(format!("unsupported checksum algorithm '{algorithm}'"))),
     }
 }
 
@@ -1240,7 +1243,9 @@ fn url_basename(url: &str) -> String {
 
 /// Extract the archive to dest by extension, stripping the first `strip`
 /// top-level dirs
-pub(crate) fn extract_archive(archive: &Path, dest: &Path, ext: &str, strip: u32) -> Result<(), UError> {
+pub(crate) fn extract_archive(
+    archive: &Path, dest: &Path, ext: &str, strip: u32,
+) -> Result<(), UError> {
     match ext {
         "zip" => extract_zip(archive, dest, strip),
         "tar.gz" | "tgz" => extract_tar_gz(archive, dest, strip),
@@ -1621,7 +1626,10 @@ bin_dir = "bin"
 
         let digest = compute_checksum(&file, "sha256").unwrap();
         // sha256 of "hello"
-        assert_eq!(digest.as_str(), "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824");
+        assert_eq!(
+            digest.as_str(),
+            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+        );
     }
 
     #[test]
@@ -1645,7 +1653,10 @@ bin_dir = "bin"
 ";
         let pattern = r"^([a-f0-9]{64})\s+.*node-v24.19.0-win-x64.zip$";
         let out = extract_hash(text, Some(pattern), "node-v24.19.0-win-x64.zip").unwrap();
-        assert_eq!(out.as_str(), "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824");
+        assert_eq!(
+            out.as_str(),
+            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+        );
     }
 
     /// No pattern + multi-file lists: must take the line by archive file name,
@@ -1658,7 +1669,10 @@ bin_dir = "bin"
 2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824  node-v24.19.0-win-x64.zip
 ";
         let out = extract_hash(text, None, "node-v24.19.0-win-x64.zip").unwrap();
-        assert_eq!(out.as_str(), "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824");
+        assert_eq!(
+            out.as_str(),
+            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+        );
         // With no matching line for the file name, fall back to the first hex in the
         // file
         let fallback = extract_hash(text, None, "no-such-file.zip").unwrap();

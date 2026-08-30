@@ -39,8 +39,8 @@ impl HttpClient {
             Client::builder().timeout(Duration::from_secs(timeout)).user_agent(USER_AGENT);
 
         if let Some(p) = proxy {
-            let proxy =
-                reqwest::Proxy::all(p).map_err(|source| UError::ProxyError { url: p.to_string(), source })?;
+            let proxy = reqwest::Proxy::all(p)
+                .map_err(|source| UError::ProxyError { url: p.to_string(), source })?;
             builder = builder.proxy(proxy);
         }
 
@@ -50,8 +50,9 @@ impl HttpClient {
         Ok(Self { client: Some(client) })
     }
 
-    /// Process-global client: timeout follows `[network] timeout` (default 30s),
-    /// proxy follows the config (`plugin.proxy` first, then `network.proxy`).
+    /// Process-global client: timeout follows `[network] timeout` (default
+    /// 30s), proxy follows the config (`plugin.proxy` first, then
+    /// `network.proxy`).
     ///
     /// Degrades stepwise instead of panicking: an unusable config proxy or a
     /// builder failure falls back to a bare client (with a warning), and only a
@@ -242,8 +243,10 @@ fn new_progress(filename: &str, total: Option<u64>) -> ProgressBar {
         Some(len) => {
             let pb = ProgressBar::new(len);
             pb.set_style(
-                bar_style("{spinner:.green} {msg} [{bar:30.cyan/blue}] {bytes}/{total_bytes} ({eta})")
-                    .progress_chars("#>-"),
+                bar_style(
+                    "{spinner:.green} {msg} [{bar:30.cyan/blue}] {bytes}/{total_bytes} ({eta})",
+                )
+                .progress_chars("#>-"),
             );
             pb.set_message(filename.to_string());
             pb
@@ -268,11 +271,8 @@ mod tests {
     /// Test client does not inherit the global proxy so localhost mock requests
     /// stay local
     fn create_client() -> HttpClient {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(30))
-            .user_agent("uvman/1.0")
-            .build()
-            .ok();
+        let client =
+            Client::builder().timeout(Duration::from_secs(30)).user_agent("uvman/1.0").build().ok();
         HttpClient { client }
     }
 

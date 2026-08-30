@@ -9,11 +9,10 @@ pub mod platform;
 pub mod plugin;
 pub mod shell;
 pub mod suggest;
-pub mod upgrade;
 mod types;
+pub mod upgrade;
 
 pub use types::*;
-
 use versions::{Mess, Versioning};
 
 use crate::Lazy;

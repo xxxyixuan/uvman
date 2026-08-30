@@ -37,9 +37,7 @@ pub fn verify_sha256(path: &Path, expected: &str) -> Result<(), UError> {
     // HexDigest::parse normalizes case, so an uppercase sidecar digest matches
     match crate::toolset::HexDigest::parse(expected) {
         Some(expected) if expected == digest => Ok(()),
-        _ => {
-            Err(UError::ChecksumError { message: format!("expected {expected}, got {digest}") })
-        },
+        _ => Err(UError::ChecksumError { message: format!("expected {expected}, got {digest}") }),
     }
 }
 
@@ -77,7 +75,8 @@ fn replace_impl(exe: &Path, new: &Path) -> Result<ReplaceOutcome, UError> {
 
     // Atomic swap; fall back to copy for cross-device temp dirs
     if fs::rename(new, exe).is_err() {
-        fs::copy(new, exe).map_err(|source| UError::FileError { path: exe.to_path_buf(), source })?;
+        fs::copy(new, exe)
+            .map_err(|source| UError::FileError { path: exe.to_path_buf(), source })?;
     }
     Ok(ReplaceOutcome::Replaced)
 }
@@ -91,7 +90,8 @@ fn replace_impl(exe: &Path, new: &Path) -> Result<ReplaceOutcome, UError> {
 
     // A running exe can be renamed but not deleted/overwritten; renaming it
     // aside frees the original name for the new binary.
-    fs::rename(exe, &old).map_err(|source| UError::FileError { path: exe.to_path_buf(), source })?;
+    fs::rename(exe, &old)
+        .map_err(|source| UError::FileError { path: exe.to_path_buf(), source })?;
 
     match fs::copy(new, exe) {
         Ok(_) => {
@@ -158,14 +158,16 @@ mod tests {
 
     #[test]
     fn parse_sha256_extracts_digest() {
-        let text = "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2  uvman-v0.2.0.zip\n";
+        let text =
+            "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2  uvman-v0.2.0.zip\n";
         assert_eq!(
             parse_sha256(text).as_deref(),
             Some("a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2")
         );
         // uppercase digests are normalized
         assert_eq!(
-            parse_sha256("A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4E5F6A1B2  x").as_deref(),
+            parse_sha256("A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4E5F6A1B2  x")
+                .as_deref(),
             Some("a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2")
         );
         assert!(parse_sha256("too short").is_none());
