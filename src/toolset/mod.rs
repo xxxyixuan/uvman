@@ -65,6 +65,43 @@ pub struct HashPlan {
     pub filename: String,
 }
 
+/// A validated hex digest (sha256: 64 / sha512: 128 lowercase hex chars).
+///
+/// The only public constructor is [`HexDigest::parse`], so a `HexDigest` in
+/// scope is well-formed by type: comparison and persistence never re-validate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct HexDigest(String);
+
+impl HexDigest {
+    /// Validate and normalize (lowercase) a raw digest string.
+    pub(crate) fn parse(raw: &str) -> Option<Self> {
+        let normalized = raw.trim().to_lowercase();
+        (matches!(normalized.len(), 64 | 128)
+            && normalized.bytes().all(|b| b.is_ascii_hexdigit()))
+        .then_some(Self(normalized))
+    }
+
+    /// Wrap a digest that is already well-formed.
+    ///
+    /// Valid by construction: callers pass either the output of `hex_encode`
+    /// over a sha2 finalize (always 64/128 lowercase hex) or a token captured by
+    /// a regex anchoring exactly `{64,128}` hex chars.
+    fn from_lowercase_hex(raw: &str) -> Self {
+        debug_assert!(Self::parse(raw).is_some(), "digest must be pre-validated: {raw}");
+        Self(raw.to_lowercase())
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for HexDigest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 /// Build an install plan from the plugin and version request (performs no
 /// writes)
 pub async fn plan(name: &str, version: Option<&str>) -> Result<InstallPlan, UError> {
@@ -367,13 +404,13 @@ fn save_records(tool_dir: &Path, records: &ArchiveRecords) {
 }
 
 /// Record (or refresh) an archive's download time, TTL, and checksum
-fn record_archive(archive: &Path, ttl_hours: u64, hash: Option<(&str, &str)>) {
+fn record_archive(archive: &Path, ttl_hours: u64, hash: Option<(&str, &HexDigest)>) {
     let Some(tool_dir) = archive.parent() else { return };
     let Some(name) = archive.file_name().and_then(OsStr::to_str) else {
         return;
     };
     let (algorithm, expected) = match hash {
-        Some((algorithm, expected)) => (Some(algorithm.to_string()), Some(expected.to_string())),
+        Some((algorithm, expected)) => (Some(algorithm.to_string()), Some(expected.as_str().to_string())),
         None => (None, None),
     };
     let mut records = load_records(tool_dir);
@@ -401,8 +438,18 @@ fn verify_recorded_hash(plan: &InstallPlan) -> Result<(), UError> {
     let (Some(algorithm), Some(expected)) = (&record.algorithm, &record.hash) else {
         return Ok(());
     };
+    // A stored hash that fails validation can never match; report a mismatch so
+    // the caller drops the archive and re-downloads (self-heal)
+    let Some(expected) = HexDigest::parse(expected) else {
+        return Err(UError::ChecksumError {
+            message: format!(
+                "cached record holds an invalid digest '{expected}' for {}",
+                plan.archive_path.display()
+            ),
+        });
+    };
     let actual = compute_checksum(&plan.archive_path, algorithm)?;
-    if actual != *expected {
+    if actual != expected {
         return Err(UError::ChecksumError {
             message: format!(
                 "expected {expected}, got {actual} for {} \
@@ -1053,7 +1100,7 @@ fn hash_plan(
 
 /// Fetch and parse the expected checksum trying candidate sources in order
 /// (mirrors → default); errors only when all fail
-async fn fetch_expected_hash(hp: &HashPlan) -> Result<String, UError> {
+async fn fetch_expected_hash(hp: &HashPlan) -> Result<HexDigest, UError> {
     let mut last_err = None;
     for url in &hp.urls {
         match HTTP_CLIENT.get(url).await {
@@ -1086,7 +1133,7 @@ async fn fetch_expected_hash(hp: &HashPlan) -> Result<String, UError> {
 /// pattern, prefer the line of the archive's official name (official checksum
 /// files list many files, so blindly taking the first hex could grab another
 /// platform's hash), finally falling back to the first hex in the file
-fn extract_hash(text: &str, pattern: Option<&str>, filename: &str) -> Result<String, UError> {
+fn extract_hash(text: &str, pattern: Option<&str>, filename: &str) -> Result<HexDigest, UError> {
     if let Some(p) = pattern {
         // Checksum files are multi-line lists (one file per line), so ^$ must anchor by
         // line; enabled automatically when the user's pattern doesn't set (?m)
@@ -1098,10 +1145,12 @@ fn extract_hash(text: &str, pattern: Option<&str>, filename: &str) -> Result<Str
         if let Some(caps) = re.captures(text)
             && let Some(g) = caps.name("hash").or_else(|| caps.get(1)).or_else(|| caps.get(0))
         {
-            let v = g.as_str().trim().to_lowercase();
-            if !v.is_empty() {
-                return Ok(v);
-            }
+            // A pattern capture that is not a digest could never match the computed
+            // hash; failing here reports the bad pattern instead of a confusing
+            // guaranteed-later mismatch
+            return HexDigest::parse(g.as_str()).ok_or_else(|| {
+                UError::ChecksumError { message: format!("pattern matched invalid digest '{}'", g.as_str().trim()) }
+            });
         }
         return Err(UError::ChecksumError { message: "hash not found in checksum file".into() });
     }
@@ -1119,8 +1168,10 @@ fn extract_hash(text: &str, pattern: Option<&str>, filename: &str) -> Result<Str
                 continue;
             };
             if let Some(m) = re.find(text) {
+                // The pattern anchors `{len}` hex chars at line start, so the token
+                // is a well-formed digest by construction
                 let hash = m.as_str().split_whitespace().next().unwrap_or("");
-                return Ok(hash.to_lowercase());
+                return Ok(HexDigest::from_lowercase_hex(hash));
             }
         }
     }
@@ -1131,33 +1182,32 @@ fn extract_hash(text: &str, pattern: Option<&str>, filename: &str) -> Result<Str
             continue;
         };
         if let Some(m) = re.find(text) {
-            return Ok(m.as_str().to_lowercase());
+            // The pattern matches exactly `{len}` hex chars, well-formed by
+            // construction
+            return Ok(HexDigest::from_lowercase_hex(m.as_str()));
         }
     }
     Err(UError::ChecksumError { message: "no hex checksum found in checksum file".into() })
 }
 
 /// Compute the archive checksum
-pub(crate) fn compute_checksum(path: &Path, algorithm: &str) -> Result<String, UError> {
+pub(crate) fn compute_checksum(path: &Path, algorithm: &str) -> Result<HexDigest, UError> {
     use sha2::{Sha256, Sha512};
     let file = fs::File::open(path)
         .map_err(|source| UError::FileError { path: path.to_path_buf(), source })?;
     // Use chunked update instead of io::copy: hasher's io::Write impl relies on
     // sha2's std feature, which may be unavailable after dependency-tree pruning.
-    let digest: String = match algorithm {
-        "sha256" => hash_file::<Sha256>(file)?,
-        "sha512" => hash_file::<Sha512>(file)?,
-        _ => {
-            return Err(UError::SimpleError(format!(
-                "unsupported checksum algorithm '{algorithm}'"
-            )));
-        },
-    };
-    Ok(digest)
+    match algorithm {
+        "sha256" => hash_file::<Sha256>(file),
+        "sha512" => hash_file::<Sha512>(file),
+        _ => Err(UError::SimpleError(format!(
+            "unsupported checksum algorithm '{algorithm}'"
+        ))),
+    }
 }
 
 /// Read the file in chunks updating the hash; return the hex digest
-fn hash_file<D: sha2::Digest>(mut file: fs::File) -> Result<String, UError> {
+fn hash_file<D: sha2::Digest>(mut file: fs::File) -> Result<HexDigest, UError> {
     use std::io::Read;
     let mut hasher = D::new();
     let mut buf = [0u8; 64 * 1024];
@@ -1168,7 +1218,7 @@ fn hash_file<D: sha2::Digest>(mut file: fs::File) -> Result<String, UError> {
         }
         hasher.update(&buf[..n]);
     }
-    Ok(hex_encode(&hasher.finalize()))
+    Ok(HexDigest::from_lowercase_hex(&hex_encode(&hasher.finalize())))
 }
 
 /// Lowercase hex encoding; a preallocated buffer avoids per-byte allocations
@@ -1571,17 +1621,17 @@ bin_dir = "bin"
 
         let digest = compute_checksum(&file, "sha256").unwrap();
         // sha256 of "hello"
-        assert_eq!(digest, "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824");
+        assert_eq!(digest.as_str(), "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824");
     }
 
     #[test]
     fn test_extract_hash_pattern() {
         let text = "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824  node.exe";
         let out = extract_hash(text, Some(r"(?P<hash>[0-9a-f]{64})"), "node.exe").unwrap();
-        assert_eq!(out.len(), 64);
+        assert_eq!(out.as_str().len(), 64);
         // Without a pattern, match the line by archive file name
         let out2 = extract_hash(text, None, "node.exe").unwrap();
-        assert_eq!(out2.len(), 64);
+        assert_eq!(out2.as_str().len(), 64);
     }
 
     /// SHASUMS256.txt real shape: multiple lines, target not first,
@@ -1595,7 +1645,7 @@ bin_dir = "bin"
 ";
         let pattern = r"^([a-f0-9]{64})\s+.*node-v24.19.0-win-x64.zip$";
         let out = extract_hash(text, Some(pattern), "node-v24.19.0-win-x64.zip").unwrap();
-        assert_eq!(out, "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824");
+        assert_eq!(out.as_str(), "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824");
     }
 
     /// No pattern + multi-file lists: must take the line by archive file name,
@@ -1608,12 +1658,12 @@ bin_dir = "bin"
 2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824  node-v24.19.0-win-x64.zip
 ";
         let out = extract_hash(text, None, "node-v24.19.0-win-x64.zip").unwrap();
-        assert_eq!(out, "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824");
+        assert_eq!(out.as_str(), "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824");
         // With no matching line for the file name, fall back to the first hex in the
         // file
         let fallback = extract_hash(text, None, "no-such-file.zip").unwrap();
-        assert_eq!(fallback.len(), 64);
-        assert!(fallback.starts_with("1111"));
+        assert_eq!(fallback.as_str().len(), 64);
+        assert!(fallback.as_str().starts_with("1111"));
     }
 
     #[test]
@@ -1733,7 +1783,17 @@ bin_dir = "bin"
 
         // Re-downloading the same archive refreshes its download time
         std::thread::sleep(Duration::from_secs(1));
-        record_archive(&archive, 48, Some(("sha256", "abc123")));
+        record_archive(
+            &archive,
+            48,
+            Some((
+                "sha256",
+                &HexDigest::parse(
+                    "abc123abc123abc123abc123abc123abc123abc123abc123abc123abc123abc1",
+                )
+                .unwrap(),
+            )),
+        );
         let second =
             load_records(&tool_dir).archives.get("node-22.0.0-win-x64.zip").cloned().unwrap();
         assert_eq!(second.ttl_hours, 48);

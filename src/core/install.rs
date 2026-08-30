@@ -34,10 +34,12 @@ pub fn parse_sha256(text: &str) -> Option<String> {
 /// Verify the SHA-256 checksum of a file against the expected hex digest.
 pub fn verify_sha256(path: &Path, expected: &str) -> Result<(), UError> {
     let digest = crate::toolset::compute_checksum(path, "sha256")?;
-    if digest.eq_ignore_ascii_case(expected) {
-        Ok(())
-    } else {
-        Err(UError::ChecksumError { message: format!("expected {expected}, got {digest}") })
+    // HexDigest::parse normalizes case, so an uppercase sidecar digest matches
+    match crate::toolset::HexDigest::parse(expected) {
+        Some(expected) if expected == digest => Ok(()),
+        _ => {
+            Err(UError::ChecksumError { message: format!("expected {expected}, got {digest}") })
+        },
     }
 }
 
