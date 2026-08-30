@@ -20,7 +20,6 @@ use crate::core::http::HTTP_CLIENT;
 use crate::core::plugin::{InstallBin, Release, ToolPlugin};
 use crate::core::suggest::did_you_mean;
 use crate::core::{paths, platform};
-use crate::ui::style::{ered, ogreen};
 
 /// Default cache TTL: 24 hours
 const DEFAULT_CACHE_TTL_HOURS: u64 = 24;
@@ -306,15 +305,7 @@ fn run_stage<T>(msg: String, f: impl FnOnce() -> Result<T, UError>) -> Result<T,
 /// Redraw the stage line on completion: drop the spinner and colorize by result
 /// mark
 fn finish_stage(pb: &ProgressBar, ok: bool, msg: &str) {
-    pb.disable_steady_tick();
-    pb.set_style(
-        indicatif::ProgressStyle::with_template("{msg}").expect("valid progress template"),
-    );
-    let mark = if ok { "✔" } else { "✖" };
-    let line = format!("{mark} {msg}");
-    let styled = if ok { ogreen(line).to_string() } else { ered(line).to_string() };
-    pb.set_message(styled);
-    pb.finish();
+    crate::ui::progress::finish_marked(pb, ok, msg);
 }
 
 /// Single-stage spinner; hidden in quiet mode.
@@ -324,10 +315,7 @@ fn stage_spinner() -> Option<ProgressBar> {
         return None;
     }
     let pb = ProgressBar::new_spinner();
-    pb.set_style(
-        indicatif::ProgressStyle::with_template("{spinner:.green} {msg}")
-            .expect("valid progress template"),
-    );
+    pb.set_style(crate::ui::progress::spinner_style("{spinner:.green} {msg}"));
     pb.enable_steady_tick(Duration::from_millis(120));
     Some(pb)
 }
@@ -553,25 +541,21 @@ fn migrate_legacy_tool_dir(cache: &Path, legacy: &Path, default_ttl: u64) {
 fn gc_tool_cache(tool_dir: &Path, default_ttl: u64) {
     let mut records = load_records(tool_dir);
     let now = SystemTime::now();
+    let mut changed = false;
 
     // Record-driven: drop entries that are expired or whose archive is gone
-    let mut changed = false;
-    let names: Vec<String> = records.archives.keys().cloned().collect();
-    for name in names {
-        let path = tool_dir.join(&name);
-        if !path.exists() {
-            records.archives.remove(&name);
-            changed = true;
-            continue;
-        }
-        let rec = records.archives[&name].clone();
-        let expires = UNIX_EPOCH + Duration::from_secs(rec.downloaded_at + rec.ttl_hours * 3600);
-        if now >= expires {
+    records.archives.retain(|name, record| {
+        let path = tool_dir.join(name);
+        let expires =
+            UNIX_EPOCH + Duration::from_secs(record.downloaded_at + record.ttl_hours * 3600);
+        if !path.exists() || now >= expires {
+            // Missing archives need no removal; the no-op error is ignored
             let _ = fs::remove_file(&path);
-            records.archives.remove(&name);
             changed = true;
+            return false;
         }
-    }
+        true
+    });
 
     // Orphans (no record): fall back to mtime + current TTL
     if let Ok(entries) = fs::read_dir(tool_dir) {
@@ -1142,11 +1126,14 @@ fn extract_hash(text: &str, pattern: Option<&str>, filename: &str) -> Result<Str
     // end of line isn't anchored to tolerate a trailing CRLF \r
     if !filename.is_empty() {
         for len in [64usize, 128] {
-            let re = regex::Regex::new(&format!(
+            // `regex::escape` guarantees the filename cannot break the pattern,
+            // but build failures degrade to the next strategy instead of panicking
+            let Ok(re) = regex::Regex::new(&format!(
                 r"(?im)^[0-9a-f]{{{len}}}\s+\*?{}",
                 regex::escape(filename)
-            ))
-            .expect("valid checksum line regex");
+            )) else {
+                continue;
+            };
             if let Some(m) = re.find(text) {
                 let hash = m.as_str().split_whitespace().next().unwrap_or("");
                 return Ok(hash.to_lowercase());
@@ -1156,8 +1143,9 @@ fn extract_hash(text: &str, pattern: Option<&str>, filename: &str) -> Result<Str
 
     // Final fallback: first 64/128-bit hex in the file
     for len in [64usize, 128] {
-        let re =
-            regex::Regex::new(&format!(r"(?i)\b[0-9a-f]{{{len}}}\b")).expect("valid hex regex");
+        let Ok(re) = regex::Regex::new(&format!(r"(?i)\b[0-9a-f]{{{len}}}\b")) else {
+            continue;
+        };
         if let Some(m) = re.find(text) {
             return Ok(m.as_str().to_lowercase());
         }

@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use futures_util::StreamExt;
-use indicatif::{ProgressBar, ProgressStyle};
+use indicatif::ProgressBar;
 use reqwest::{Client, Response};
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
@@ -14,16 +14,17 @@ use crate::{Lazy, core};
 /// Default timeout (s) when `[network] timeout` is not set
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
 
-pub static HTTP_CLIENT: Lazy<HttpClient> = Lazy::new(|| {
-    // Timeout follows global config ([network] timeout), defaulting to 30s
-    let timeout =
-        crate::core::config::GLOBAL_CONFIG.network.timeout.unwrap_or(DEFAULT_TIMEOUT_SECS);
-    HttpClient::new(timeout).expect("Failed to start HTTP Client")
-});
+/// User agent for all uvman HTTP requests
+const USER_AGENT: &str = "uvman/1.0";
+
+pub static HTTP_CLIENT: Lazy<HttpClient> = Lazy::new(HttpClient::global);
 
 #[derive(Debug, Clone)]
 pub struct HttpClient {
-    client: Client,
+    /// `None` only when every client build degraded (e.g. the TLS backend
+    /// failed to initialize); requests then fail with a clear error instead of
+    /// panicking at first use.
+    client: Option<Client>,
 }
 
 impl HttpClient {
@@ -34,25 +35,42 @@ impl HttpClient {
     /// Build an HTTP client; an explicit proxy wins, else falls back to the
     /// global config proxy
     pub fn with_proxy(timeout: u64, proxy: Option<&str>) -> Result<Self, UError> {
-        let user_agent = "uvman/1.0";
         let mut builder =
-            Client::builder().timeout(Duration::from_secs(timeout)).user_agent(user_agent);
+            Client::builder().timeout(Duration::from_secs(timeout)).user_agent(USER_AGENT);
 
-        // Explicit proxy wins, else fall back to the global config proxy
-        let proxy_url: Option<String> = match proxy {
-            Some(p) => Some(p.to_string()),
-            None => config_proxy().map(str::to_string),
-        };
-        if let Some(p) = proxy_url {
-            let proxy = reqwest::Proxy::all(&p)
-                .map_err(|source| UError::ProxyError { url: p.clone(), source })?;
+        if let Some(p) = proxy {
+            let proxy =
+                reqwest::Proxy::all(p).map_err(|source| UError::ProxyError { url: p.to_string(), source })?;
             builder = builder.proxy(proxy);
         }
 
         let client = builder
             .build()
             .map_err(|e| UError::SimpleError(format!("failed to build HTTP client: {e}")))?;
-        Ok(Self { client })
+        Ok(Self { client: Some(client) })
+    }
+
+    /// Process-global client: timeout follows `[network] timeout` (default 30s),
+    /// proxy follows the config (`plugin.proxy` first, then `network.proxy`).
+    ///
+    /// Degrades stepwise instead of panicking: an unusable config proxy or a
+    /// builder failure falls back to a bare client (with a warning), and only a
+    /// fundamentally broken TLS backend leaves `client = None`, which surfaces
+    /// as a per-request error rather than a process abort.
+    fn global() -> Self {
+        let timeout =
+            crate::core::config::GLOBAL_CONFIG.network.timeout.unwrap_or(DEFAULT_TIMEOUT_SECS);
+        let proxy = config_proxy().map(str::to_string);
+        Self::with_proxy(timeout, proxy.as_deref()).unwrap_or_else(|e| {
+            crate::ui::report::print_warning(&format!("HTTP client degraded to no-proxy: {e}"));
+            Self::new(timeout).unwrap_or_else(|_| Self { client: None })
+        })
+    }
+
+    fn client(&self) -> Result<&Client, UError> {
+        self.client.as_ref().ok_or_else(|| {
+            UError::SimpleError("HTTP client unavailable (TLS backend failed to initialize)".into())
+        })
     }
 
     #[allow(dead_code)] // reserved: infer filename from URL and download into a directory
@@ -104,7 +122,7 @@ impl HttpClient {
         &self, url: &str, dest_path: &Path, temp_path: &Path,
     ) -> Result<PathBuf, UError> {
         let response = self
-            .client
+            .client()?
             .get(url)
             .send()
             .await
@@ -161,7 +179,7 @@ impl HttpClient {
 
     pub async fn get(&self, url: &str) -> Result<Response, UError> {
         let response = self
-            .client
+            .client()?
             .get(url)
             .send()
             .await
@@ -219,25 +237,20 @@ fn tmp_sibling(dest_path: &Path) -> PathBuf {
 
 /// Build download progress: a progress bar when total is known, else a spinner
 fn new_progress(filename: &str, total: Option<u64>) -> ProgressBar {
+    use crate::ui::progress::{bar_style, spinner_style};
     match total {
         Some(len) => {
             let pb = ProgressBar::new(len);
             pb.set_style(
-                ProgressStyle::with_template(
-                    "{spinner:.green} {msg} [{bar:30.cyan/blue}] {bytes}/{total_bytes} ({eta})",
-                )
-                .expect("valid progress template")
-                .progress_chars("#>-"),
+                bar_style("{spinner:.green} {msg} [{bar:30.cyan/blue}] {bytes}/{total_bytes} ({eta})")
+                    .progress_chars("#>-"),
             );
             pb.set_message(filename.to_string());
             pb
         },
         None => {
             let pb = ProgressBar::new_spinner();
-            pb.set_style(
-                ProgressStyle::with_template("{spinner:.green} {msg} {bytes}")
-                    .expect("valid progress template"),
-            );
+            pb.set_style(spinner_style("{spinner:.green} {msg} {bytes}"));
             pb.set_message(format!("downloading {filename}"));
             pb
         },
@@ -259,7 +272,7 @@ mod tests {
             .timeout(Duration::from_secs(30))
             .user_agent("uvman/1.0")
             .build()
-            .unwrap();
+            .ok();
         HttpClient { client }
     }
 
