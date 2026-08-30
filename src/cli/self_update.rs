@@ -80,7 +80,7 @@ impl SelfUpdate {
                 style::oyellow("!"),
                 latest.tag
             );
-            report::print_hint("to install it, run:", &["uvman self-update".into()]);
+            report::print_hint("install the update", &["uvman self-update".into()]);
             return Ok(());
         }
 
@@ -141,7 +141,7 @@ impl SelfUpdate {
         }
 
         println!("{} uvman updated to {} (was {current})", style::ogreen("✔"), latest.tag,);
-        report::print_hint("restart your terminal, then verify with:", &["uvman version".into()]);
+        report::print_hint("restart your terminal, then check the new version", &["uvman version".into()]);
         Ok(())
     }
 
