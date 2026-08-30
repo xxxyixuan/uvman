@@ -43,6 +43,10 @@ pub enum UError {
     #[error("invalid plugin name '{name}': only letters, digits, '_' and '-' are allowed")]
     InvalidPluginName { name: String },
 
+    /// Invalid tool name (deletion targets must stay inside `tools/`)
+    #[error("invalid tool name '{name}': only letters, digits, '_' and '-' are allowed")]
+    InvalidToolName { name: String },
+
     /// Path does not exist
     #[error("path '{}' does not exist", path.display())]
     PathNotFound { path: PathBuf },
@@ -221,6 +225,7 @@ impl UError {
     pub fn exit_code(&self) -> u8 {
         match self {
             Self::InvalidPluginName { .. }
+            | Self::InvalidToolName { .. }
             | Self::InvalidUrl { .. }
             | Self::InvalidGitHubUrl { .. }
             | Self::PathNotFound { .. }

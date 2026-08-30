@@ -133,6 +133,9 @@ $ uvman install node@22          # 安装指定版本
 $ uvman install node@latest      # 安装最新版
 $ uvman install node@lts         # 安装 LTS 版
 $ uvman use node@22              # 切换版本
+$ uvman uninstall node@20        # 卸载指定版本
+$ uvman uninstall node           # 卸载整个工具
+$ uvman doctor                   # 环境自检
 $ uvman list                     # 查看所有已安装工具与版本
 $ uvman list node --remote       # 查看远端可用版本
 ```
@@ -144,10 +147,12 @@ $ uvman list node --remote       # 查看远端可用版本
 | 命令                               | 说明                                              |
 |----------------------------------|-------------------------------------------------|
 | `uvman install <tool>@<version>` | 安装工具（别名 `i`），`--force` 强制重装、失败自动回滚              |
+| `uvman uninstall <tool>[@<version>]` | 卸载单个版本（支持 `22` / `latest` 等写法）或整个工具；卸载当前激活版本时自动移除激活记录 |
 | `uvman list [tool]`              | 列出本地已安装版本；`--remote` 列远端版本、`--json` 输出 JSON     |
 | `uvman use <tool>@<version>`     | 切换当前使用版本（别名 `u`），需已安装                           |
 | `uvman env`                      | （内部命令）`activate` 的后台求值器，不在 `help` 中显示，`--shell` 指定语法 |
 | `uvman activate`                 | 输出激活脚本，通过提示符钩子自动刷新（支持 bash / zsh / fish / pwsh） |
+| `uvman doctor`                   | 环境自检：`UVMAN_HOME` 布局、配置可解析、插件完整性、shell 激活状态；`--json` 输出结构化报告，有检查失败时退出码为 1 |
 | `uvman plugin <cmd>`             | 插件管理：`install` / `uninstall` / `list` / `info`  |
 | `uvman version`                  | 显示版本信息（别名 `v`，`-V` 可用），`--json` 输出结构化信息         |
 
