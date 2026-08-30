@@ -1,4 +1,5 @@
 mod activate;
+mod doctor;
 mod env;
 mod install;
 mod list;
@@ -41,6 +42,7 @@ pub enum Commands {
     #[clap(hide = true)]
     Env(env::Env),
     Activate(activate::Activate),
+    Doctor(doctor::Doctor),
     SelfUpdate(self_update::SelfUpdate),
 }
 
@@ -55,6 +57,7 @@ impl Commands {
             Commands::Use(cmd) => cmd.run().await,
             Commands::Env(cmd) => cmd.run(),
             Commands::Activate(cmd) => cmd.run(),
+            Commands::Doctor(cmd) => cmd.run(),
             Commands::SelfUpdate(cmd) => cmd.run().await,
         }
     }
