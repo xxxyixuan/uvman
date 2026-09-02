@@ -62,3 +62,30 @@ impl Commands {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::{CommandFactory, Parser};
+
+    #[test]
+    fn bare_invocation_leaves_command_none() {
+        let cli = Cli::try_parse_from(["uvman"]).unwrap();
+        assert!(cli.command.is_none());
+    }
+
+    #[test]
+    fn help_lists_all_user_facing_commands() {
+        let mut buf = Vec::new();
+        Cli::command().write_help(&mut buf).unwrap();
+        let help = String::from_utf8(buf).unwrap();
+        for name in
+            ["install", "uninstall", "list", "use", "activate", "doctor", "plugin", "self-update"]
+        {
+            assert!(help.contains(name), "help output is missing `{name}`");
+        }
+        // The internal evaluator stays hidden from user-facing help
+        let env_listed = help.lines().any(|l| l.starts_with("  env ") || l.trim_end() == "  env");
+        assert!(!env_listed, "internal `env` leaked into help");
+    }
+}

@@ -7,7 +7,7 @@ mod ui;
 use core::error::UError;
 pub use std::sync::LazyLock as Lazy;
 
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 pub use eyre::Result;
 
 fn main() -> std::process::ExitCode {
@@ -47,6 +47,10 @@ async fn _main() -> Result<()> {
     }
     if let Some(cmd) = cli.command {
         cmd.run().await?;
+    } else {
+        // A bare `uvman` should be immediately useful: show the full help
+        // (on stdout, exit 0) instead of printing nothing.
+        cli::Cli::command().print_help()?;
     }
     Ok(())
 }
