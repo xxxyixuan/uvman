@@ -2,8 +2,8 @@
 //!
 //! Design follows uv and mise:
 //! - `error:` states the fact in one sentence
-//! - `hint:` suggests a fix; runnable commands are printed on their own line
-//!   (two-space indent, green highlight)
+//! - `hint:` states the situation; runnable commands are printed underneath
+//!   as `you can run "cmd"` (green-highlighted command, copy-paste ready)
 //! - Low-level system errors (network/IO) get a dim footer pointing users to
 //!   `--verbose` for self-service digging
 //! - Usage errors exit with code 2, general errors with 1
@@ -88,7 +88,7 @@ pub fn print_hint(message: &str, commands: &[String]) {
     }
     print_prefixed(ecyan("hint:"), message);
     for cmd in commands {
-        eprintln!("  {}", styled_code(cmd));
+        eprintln!("you can run {}", styled_code(&format!("\"{cmd}\"")));
     }
 }
 

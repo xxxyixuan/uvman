@@ -258,7 +258,7 @@ impl InfoArgs {
         } else {
             println!("Plugin '{}' is not installed.", self.name);
             crate::ui::report::print_hint(
-                "to install it, run:",
+                "install the plugin",
                 &[format!("uvman plugin install {}", self.name)],
             );
             Ok(())
