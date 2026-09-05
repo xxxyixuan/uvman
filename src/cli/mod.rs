@@ -9,6 +9,7 @@ mod self_update;
 mod uninstall;
 mod use_;
 pub(crate) mod version;
+mod which;
 
 use crate::Result;
 
@@ -39,6 +40,7 @@ pub enum Commands {
     Uninstall(uninstall::Uninstall),
     List(list::List),
     Current(current::Current),
+    Which(which::Which),
     Use(use_::Use),
     /// Internal evaluator driven by activate scripts; not user-facing
     #[clap(hide = true)]
@@ -57,6 +59,7 @@ impl Commands {
             Commands::Uninstall(cmd) => cmd.run().await,
             Commands::List(cmd) => cmd.run().await,
             Commands::Current(cmd) => cmd.run(),
+            Commands::Which(cmd) => cmd.run(),
             Commands::Use(cmd) => cmd.run().await,
             Commands::Env(cmd) => cmd.run(),
             Commands::Activate(cmd) => cmd.run(),
@@ -87,6 +90,7 @@ mod tests {
             "uninstall",
             "list",
             "current",
+            "which",
             "use",
             "activate",
             "doctor",
