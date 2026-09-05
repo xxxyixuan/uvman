@@ -122,6 +122,16 @@ pub enum UError {
     /// Target version already installed (blocks reinstall without --force)
     #[error("{tool}@{version} is already installed")]
     AlreadyInstalled { tool: String, version: String },
+
+    /// The tool has no active version recorded, so `which` has no binary to
+    /// locate
+    #[error("no active version of '{tool}'")]
+    NoActiveVersion { tool: String },
+
+    /// The active version's deploy dir carries no executable matching the tool
+    /// name (deploy dir emptied by hand, or a layout `which` cannot read)
+    #[error("no '{tool}' executable found in {}", path.display())]
+    ExecutableNotFound { tool: String, version: String, path: PathBuf },
 }
 
 impl UError {
@@ -170,6 +180,16 @@ impl UError {
             },
             Self::AlreadyInstalled { tool, version } => Hint {
                 message: "to reinstall and overwrite the existing files, run:".into(),
+                commands: vec![format!("uvman install {tool}@{version} --force")],
+            },
+            Self::NoActiveVersion { tool } => Hint {
+                message: "activate an installed version first:".into(),
+                commands: vec![format!("uvman use {tool}")],
+            },
+            // --force so the suggestion also works when the broken version is
+            // still registered as installed (plain install would refuse)
+            Self::ExecutableNotFound { tool, version, .. } => Hint {
+                message: "the active version looks incomplete; redeploy it with:".into(),
                 commands: vec![format!("uvman install {tool}@{version} --force")],
             },
             // Any network failure points at the config proxy (GitHub domains need it on some
