@@ -1,4 +1,5 @@
 mod activate;
+mod current;
 mod doctor;
 mod env;
 mod install;
@@ -37,6 +38,7 @@ pub enum Commands {
     Install(install::Install),
     Uninstall(uninstall::Uninstall),
     List(list::List),
+    Current(current::Current),
     Use(use_::Use),
     /// Internal evaluator driven by activate scripts; not user-facing
     #[clap(hide = true)]
@@ -54,6 +56,7 @@ impl Commands {
             Commands::Install(cmd) => cmd.run().await,
             Commands::Uninstall(cmd) => cmd.run().await,
             Commands::List(cmd) => cmd.run().await,
+            Commands::Current(cmd) => cmd.run(),
             Commands::Use(cmd) => cmd.run().await,
             Commands::Env(cmd) => cmd.run(),
             Commands::Activate(cmd) => cmd.run(),
@@ -79,9 +82,17 @@ mod tests {
         let mut buf = Vec::new();
         Cli::command().write_help(&mut buf).unwrap();
         let help = String::from_utf8(buf).unwrap();
-        for name in
-            ["install", "uninstall", "list", "use", "activate", "doctor", "plugin", "self-update"]
-        {
+        for name in [
+            "install",
+            "uninstall",
+            "list",
+            "current",
+            "use",
+            "activate",
+            "doctor",
+            "plugin",
+            "self-update",
+        ] {
             assert!(help.contains(name), "help output is missing `{name}`");
         }
         // The internal evaluator stays hidden from user-facing help
