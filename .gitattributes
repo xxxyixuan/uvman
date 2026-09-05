@@ -1,0 +1,20 @@
+# Normalize all text files to LF in the repo and in the working tree.
+# Without this, core.autocrlf=true on Windows re-detects every LF file as "needs CRLF"
+# and git status shows unchanged files as modified.
+* text=auto eol=lf
+
+# Windows batch files must stay CRLF to run correctly.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# text=auto already auto-detects these as binary; listed here to be explicit.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.gz binary
+*.exe binary
+*.dll binary
