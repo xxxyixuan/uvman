@@ -2,6 +2,20 @@
 
 uvman 所有显著变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)；每个版本对应一个 GitHub Release，详见各版本链接。
 
+## [v0.2.0](https://github.com/xxxyixuan/uvman/releases/tag/v0.2.0) — 2026-09-06
+
+查询命令定稿：新增只读查询命令 `current` / `which`，版本解析收敛为 `core` 单一入口，为 0.5.0 项目级作用域预埋接口。
+
+### 新增特性
+
+- `uvman current [tool] [-J/--json]`：只读输出当前激活版本，无参数列出全部工具；人类可读输出 `node  22.19.0 (global)`，`--json` 输出 `{ "node": { "version": "22.19.0", "scope": "global" } }`；无激活版本输出 `none` 并以 0 退出，JSON 为空对象（[7eb14da](https://github.com/xxxyixuan/uvman/commit/7eb14da)）
+- `uvman which <tool>`：输出当前激活版本可执行文件的绝对路径（供脚本定位实际二进制）；解析链为激活版本 → `tools/<tool>/<version>/`（含 `bin/`），Windows 依次尝试 `.exe/.cmd/.bat/.ps1`、Unix 尝试裸文件名；无法定位时明确报错并提示 `uvman install <tool>@<version>` 重新部署（[8e74837](https://github.com/xxxyixuan/uvman/commit/8e74837)）
+
+### 优化与改进
+
+- 版本解析收敛为 `core::resolve` 单一入口（返回 `(version, scope)`，scope 本版本恒为 `global`），`current` / `which` / `env` 三个查询命令均经该入口；0.5.0 项目级作用域落地时只需替换入口的查找实现，命令无需改动（[#20](https://github.com/xxxyixuan/uvman/pull/20)）
+- 激活版本目录被手工删除时，只读命令一致按「无此版本」处理且不修复状态：`current` 跳过并输出 `none`（`--json` 为空对象）、`which` 报错提示重新部署（[#21](https://github.com/xxxyixuan/uvman/pull/21)）
+
 ## [v0.1.7](https://github.com/xxxyixuan/uvman/releases/tag/v0.1.7) — 2026-09-04
 
 裸命令打印帮助，hint 显式标注可运行命令。
