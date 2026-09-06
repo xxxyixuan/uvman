@@ -7,6 +7,7 @@ pub mod install;
 pub mod paths;
 pub mod platform;
 pub mod plugin;
+pub mod resolve;
 pub mod shell;
 pub mod suggest;
 mod types;

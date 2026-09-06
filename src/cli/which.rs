@@ -7,9 +7,9 @@
 use std::path::{Path, PathBuf};
 
 use crate::Result;
-use crate::core::current;
 use crate::core::error::UError;
 use crate::core::paths::{absolute, tools_dir};
+use crate::core::resolve;
 
 /// Print the absolute path of the executable behind a tool's active version
 ///
@@ -31,7 +31,7 @@ pub struct Which {
 
 impl Which {
     pub fn run(&self) -> Result<()> {
-        let Some(version) = current::current_version(&self.tool) else {
+        let Some((version, _scope)) = resolve::current_version(&self.tool) else {
             return Err(UError::NoActiveVersion { tool: self.tool.clone() }.into());
         };
         let path = locate_executable(&tools_dir(), &self.tool, &version)?;

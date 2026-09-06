@@ -1,8 +1,9 @@
 //! `uvman current`: read-only query of the globally active tool versions.
 //!
-//! The answer comes straight from the activation table `use` maintains;
-//! nothing here writes state, so a missing/corrupt table or an absent tool
-//! degrades to `none` with exit 0 instead of an error.
+//! Versions resolve through the shared core entry (`core::resolve`), the same
+//! lookup `which` and `env` use; nothing here writes state, so a
+//! missing/corrupt table or an absent tool degrades to `none` with exit 0
+//! instead of an error.
 
 use std::collections::BTreeMap;
 
@@ -11,6 +12,7 @@ use serde::Serialize;
 use crate::Result;
 use crate::core::current::{self, CurrentTools};
 use crate::core::error::UError;
+use crate::core::resolve::{self, Scope};
 use crate::ui::report::print_hint;
 use crate::ui::style::odim;
 
@@ -82,45 +84,23 @@ impl Current {
     }
 }
 
-/// Where a reported active version comes from. 0.2.0 only has the global
-/// activation table; the type pins the output contract (the human `(global)`
-/// suffix and the JSON `scope` field) so 0.5.0 can introduce project scope
-/// without changing what commands print.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "lowercase")]
-enum Scope {
-    Global,
-}
-
-impl Scope {
-    fn label(self) -> &'static str {
-        match self {
-            Scope::Global => "global",
-        }
-    }
-}
-
-/// One tool's active version and its scope — the resolution layer of this
-/// release: global activation state, then "none". 0.5.0 inserts the project
-/// level ahead of it and hoists this into a `core` entry point shared with
-/// `which` / `env` (0.2.0 plan, task 5).
-fn resolve<'a>(table: &'a CurrentTools, tool: &str) -> Option<(&'a str, Scope)> {
-    table.tools.get(tool).map(|entry| (entry.version.as_str(), Scope::Global))
-}
-
 /// The rows to report, already narrowed by the tool argument and name-sorted
-/// (BTreeMap iteration). Empty = nothing active for the requested view.
+/// (BTreeMap iteration); every row resolves through the shared core entry.
+/// Empty = nothing active for the requested view.
 fn report_rows<'a>(
     table: &'a CurrentTools, tool: Option<&'a str>,
 ) -> Vec<(&'a str, &'a str, Scope)> {
     match tool {
-        Some(name) => resolve(table, name)
+        Some(name) => resolve::from_table(table, name)
             .map(|(version, scope)| vec![(name, version, scope)])
             .unwrap_or_default(),
         None => table
             .tools
-            .iter()
-            .map(|(name, entry)| (name.as_str(), entry.version.as_str(), Scope::Global))
+            .keys()
+            .filter_map(|name| {
+                resolve::from_table(table, name)
+                    .map(|(version, scope)| (name.as_str(), version, scope))
+            })
             .collect(),
     }
 }
@@ -144,18 +124,16 @@ fn json_document<'a>(
     table: &'a CurrentTools, tool: Option<&'a str>,
 ) -> BTreeMap<&'a str, ActiveVersion<'a>> {
     match tool {
-        Some(name) => resolve(table, name)
+        Some(name) => resolve::from_table(table, name)
             .map(|(version, scope)| (name, ActiveVersion { version, scope }))
             .into_iter()
             .collect(),
         None => table
             .tools
-            .iter()
-            .map(|(name, entry)| {
-                (
-                    name.as_str(),
-                    ActiveVersion { version: entry.version.as_str(), scope: Scope::Global },
-                )
+            .keys()
+            .filter_map(|name| {
+                resolve::from_table(table, name)
+                    .map(|(version, scope)| (name.as_str(), ActiveVersion { version, scope }))
             })
             .collect(),
     }
@@ -172,14 +150,6 @@ mod tests {
             table.tools.insert(name.to_string(), CurrentEntry { version: version.to_string() });
         }
         table
-    }
-
-    #[test]
-    fn test_resolve_reports_global_scope() {
-        let table = table_with(&[("node", "22.19.0")]);
-        assert_eq!(resolve(&table, "node"), Some(("22.19.0", Scope::Global)));
-        // A tool without an entry resolves to "none"
-        assert_eq!(resolve(&table, "go"), None);
     }
 
     #[test]

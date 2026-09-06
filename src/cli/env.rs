@@ -13,6 +13,7 @@ use crate::Result;
 use crate::core::current::{self, CurrentTools};
 use crate::core::error::UError;
 use crate::core::paths::{absolute, tools_dir};
+use crate::core::resolve;
 use crate::core::shell::{Shell, is_activated};
 use crate::ui::report::print_hint;
 
@@ -73,16 +74,18 @@ struct ToolEnv {
     bin: Option<PathBuf>,
 }
 
-/// Gather the plan from the state table, the tools dir and the inherited
-/// environment. The IO-reading half of the command; `tools_root` is a
-/// parameter so tests can use a scratch dir.
+/// Gather the plan from the state table (versions via the shared
+/// `core::resolve` entry), the tools dir and the inherited environment. The
+/// IO-reading half of the command; `tools_root` is a parameter so tests can
+/// use a scratch dir.
 fn build_plan(table: &CurrentTools, tools_root: &Path) -> RefreshPlan {
     // BTreeMap iteration is name-sorted, so output order is deterministic
     let tools = table
         .tools
-        .iter()
-        .filter_map(|(name, entry)| {
-            let home = absolute(tools_root.join(name).join(&entry.version));
+        .keys()
+        .filter_map(|name| {
+            let (version, _scope) = resolve::from_table(table, name)?;
+            let home = absolute(tools_root.join(name).join(version));
             // Skip missing installs (e.g. an active version deleted manually)
             if !home.is_dir() {
                 return None;
@@ -90,7 +93,7 @@ fn build_plan(table: &CurrentTools, tools_root: &Path) -> RefreshPlan {
             let bin = home.join("bin");
             Some(ToolEnv {
                 fragment: env_var_fragment(name),
-                version: entry.version.clone(),
+                version: version.to_string(),
                 bin: bin.is_dir().then_some(bin),
                 home,
             })
