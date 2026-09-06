@@ -33,11 +33,6 @@ pub fn load() -> CurrentTools {
     load_from(&tool_current_path())
 }
 
-/// Query the currently active version of a tool
-pub fn current_version(tool: &str) -> Option<String> {
-    load().tools.get(tool).map(|e| e.version.clone())
-}
-
 /// Set (or switch) the current version of a tool
 pub fn set_current(tool: &str, version: &str) -> Result<(), UError> {
     set_current_at(&tool_current_path(), tool, version)

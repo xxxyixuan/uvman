@@ -10,6 +10,7 @@ use crate::Result;
 use crate::core::current;
 use crate::core::error::UError;
 use crate::core::paths;
+use crate::core::resolve;
 use crate::toolset::{installed_versions, resolve_installed_version};
 use crate::ui::report::print_hint;
 use crate::ui::style::ogreen;
@@ -33,7 +34,7 @@ impl Uninstall {
 
         // Read the active record up front: it decides the rollback and the
         // notice after the removal
-        let active = current::current_version(&tool);
+        let active = resolve::current_version(&tool).map(|(version, _)| version);
 
         let mut rolled_back: Option<String> = None;
         let message = match version.as_deref() {

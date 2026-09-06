@@ -1,6 +1,7 @@
 use super::install::parse_spec;
 use crate::Result;
 use crate::core::current;
+use crate::core::resolve;
 use crate::core::shell::{Shell, is_activated};
 use crate::toolset::resolve_installed_version;
 use crate::ui::report::print_hint;
@@ -24,7 +25,7 @@ impl Use {
         let resolved = resolve_installed_version(&tool, version.as_deref()).await?;
 
         // `use` is the sole writer of the state table; env/list only read it
-        let previous = current::current_version(&tool);
+        let previous = resolve::current_version(&tool).map(|(version, _)| version);
         current::set_current(&tool, &resolved)?;
 
         println!("{}", ogreen(switch_message(&tool, previous.as_deref(), &resolved)));
