@@ -151,6 +151,7 @@ $ uvman list node --remote       # 查看远端可用版本
 | `uvman list [tool]`              | 列出本地已安装版本；`--remote` 列远端版本、`--json` 输出 JSON     |
 | `uvman use <tool>@<version>`     | 切换当前使用版本（别名 `u`），需已安装                           |
 | `uvman current [tool]`           | 查询当前激活版本（只读）：无参数列出全部，`--json` 输出结构化结果 |
+| `uvman which <tool>`             | 输出当前激活版本可执行文件的绝对路径（供脚本定位实际二进制） |
 | `uvman env`                      | （内部命令）`activate` 的后台求值器，不在 `help` 中显示，`--shell` 指定语法 |
 | `uvman activate`                 | 输出激活脚本，通过提示符钩子自动刷新（支持 bash / zsh / fish / pwsh） |
 | `uvman doctor`                   | 环境自检：`UVMAN_HOME` 布局、配置可解析、插件完整性、shell 激活状态；`--json` 输出结构化报告，有检查失败时退出码为 1 |

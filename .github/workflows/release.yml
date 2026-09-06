@@ -1,7 +1,7 @@
-# Release tags (v*) are maintained exclusively on the `release` branch:
-# its history is a linear record of tagged release versions. `main` carries
-# only development history (no Release commits). Pushing a v* tag triggers
-# this build regardless of which branch it is created on.
+# Releases are cut from `main` (git-workflow 3.4): a `chore(release): bump
+# vX.Y.Z` squash node on `main` carries the version bump, and the annotated
+# v* tag is placed on that commit. Pushing a v* tag triggers this build
+# regardless of which branch it is created on.
 name: release
 
 on:
