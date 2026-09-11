@@ -2,6 +2,19 @@
 
 uvman 所有显著变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)；每个版本对应一个 GitHub Release，详见各版本链接。
 
+## [Unreleased]
+
+### 新增特性（0.3.0 Shims 与 GUI/IDE 场景）
+
+- `uvman-shim` 第二编译目标：按命令名生成的转发器（`<UVMAN_HOME>\shims\<cmd>`），GUI/IDE 进程无需 `activate` 即可解析 uvman 管理的工具；转发与 `which` 同源（共享 `core::resolve` 与可执行定位规则），未激活/目标缺失给出可操作错误
+- `uvman shims <enable|disable|status|rehash>`：管理用户 PATH 中的 shims 目录。`enable` 仅 Windows 写入 `HKCU\Environment\Path`（备份先行、`REG_EXPAND_SZ` 类型保真、广播 `WM_SETTINGCHANGE`，幂等），Unix 降级为 shell profile 手动提示；`disable` 仅移除 uvman 自有条目；`status` 报告目录/一致性/系统工具遮蔽；`rehash` 幂等重建（manifest 驱动清理，不删用户手放文件）
+- `install` / `uninstall` / `use` 成功后自动 rehash，保持 shim 与激活状态同步（静默尽力而为，不阻断命令）
+- `doctor` 新增 shims 检查项：目录与生成一致性、用户 PATH 接线（Windows）、可复制修复命令
+
+### 优化与改进
+
+- crate 新增 `[lib]` 目标，主二进制瘦身为薄入口，`uvman-shim` 仅共享 core（不引入 clap/网络/UI）
+
 ## [v0.2.0](https://github.com/xxxyixuan/uvman/releases/tag/v0.2.0) — 2026-09-06
 
 查询命令定稿：新增只读查询命令 `current` / `which`，版本解析收敛为 `core` 单一入口，为 0.5.0 项目级作用域预埋接口。
