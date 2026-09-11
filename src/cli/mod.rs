@@ -6,6 +6,7 @@ mod install;
 mod list;
 mod plugin;
 mod self_update;
+mod shims;
 mod uninstall;
 mod use_;
 pub(crate) mod version;
@@ -46,6 +47,7 @@ pub enum Commands {
     #[clap(hide = true)]
     Env(env::Env),
     Activate(activate::Activate),
+    Shims(shims::Shims),
     Doctor(doctor::Doctor),
     SelfUpdate(self_update::SelfUpdate),
 }
@@ -63,6 +65,7 @@ impl Commands {
             Commands::Use(cmd) => cmd.run().await,
             Commands::Env(cmd) => cmd.run(),
             Commands::Activate(cmd) => cmd.run(),
+            Commands::Shims(cmd) => cmd.run(),
             Commands::Doctor(cmd) => cmd.run(),
             Commands::SelfUpdate(cmd) => cmd.run().await,
         }

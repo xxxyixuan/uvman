@@ -140,6 +140,32 @@ fn save_manifest(shims: &Path, manifest: &ShimManifest) -> Result<(), UError> {
     fs::write(&path, text).map_err(|source| UError::FileError { path, source })
 }
 
+/// Command names the manifest records as generated shims (missing manifest →
+/// empty)
+pub fn manifest_names(shims: &Path) -> Vec<String> {
+    load_manifest(shims).generated
+}
+
+/// Every command name the currently active, deployed tools provide (sorted,
+/// deduped) — the desired shim set.
+pub fn active_command_names(home: &Path) -> Vec<String> {
+    let table = current::load_from(&home.join("config").join("tool_current.toml"));
+    let mut names = Vec::new();
+    for (tool, _entry) in &table.tools {
+        let Some((version, _scope)) = resolve::from_table(&table, tool.as_str()) else {
+            continue;
+        };
+        let version_dir = home.join("tools").join(tool).join(version);
+        if !version_dir.is_dir() {
+            continue; // active version deleted by hand: report, never repair
+        }
+        names.extend(executables_in(&version_dir));
+    }
+    names.sort();
+    names.dedup();
+    names
+}
+
 /// Outcome of one `rehash` run (consumed by the `shims rehash` command)
 #[derive(Debug, Default)]
 pub struct RehashReport {
@@ -205,22 +231,9 @@ fn executables_in(version_dir: &Path) -> Vec<String> {
 ///   same-name shims only.
 pub fn rehash(home: &Path) -> Result<RehashReport, UError> {
     let shims = home.join("shims");
-    let table = current::load_from(&home.join("config").join("tool_current.toml"));
 
     // Target set: every command name any active deployed version provides
-    let mut target: Vec<String> = Vec::new();
-    for (tool, _entry) in &table.tools {
-        let Some((version, _scope)) = resolve::from_table(&table, tool.as_str()) else {
-            continue;
-        };
-        let version_dir = home.join("tools").join(tool).join(version);
-        if !version_dir.is_dir() {
-            continue; // active version deleted by hand: report, never repair
-        }
-        target.extend(executables_in(&version_dir));
-    }
-    target.sort();
-    target.dedup();
+    let target = active_command_names(home);
 
     // Stale cleanup is manifest-driven; the manifest dose not track the
     // helper dir, so it is safe to leave it untouched here.
