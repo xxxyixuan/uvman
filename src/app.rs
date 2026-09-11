@@ -2,7 +2,7 @@ use crate::core::config;
 use crate::core::paths;
 use crate::{Lazy, Result};
 
-pub(crate) fn init() -> Result<()> {
+pub fn init() -> Result<()> {
     // Initialize the color_eyre error reporting library
     color_eyre::install()?;
 

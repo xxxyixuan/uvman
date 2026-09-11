@@ -1,56 +1,33 @@
-mod app;
-mod cli;
-mod core;
-mod toolset;
-mod ui;
+//! `uvman` binary: a thin wrapper around the library entry point.
+//!
+//! All command logic lives in the `uvman` library target; this binary only
+//! bootstraps the error handler and runs the async CLI body on a tokio
+//! runtime.
 
-use core::error::UError;
-pub use std::sync::LazyLock as Lazy;
-
-use clap::{CommandFactory, Parser};
-pub use eyre::Result;
+use uvman::core::error::UError;
 
 fn main() -> std::process::ExitCode {
-    let result = app::init().and_then(|()| _main());
+    let result = uvman::app::init().and_then(|()| {
+        tokio::runtime::Runtime::new()
+            .expect("failed to create the tokio runtime")
+            .block_on(uvman::run())
+    });
     match result {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(report) => {
             let want_debug = std::env::var_os("RUST_BACKTRACE").is_some_and(|v| v != "0")
-                || ui::report::verbose() > 0;
+                || uvman::ui::report::verbose() > 0;
             // Print user-readable info by default; --verbose / RUST_BACKTRACE
             // emit the full debug report.
             let code = if want_debug {
                 eprintln!("{report:?}");
                 1
             } else if let Some(err) = report.downcast_ref::<UError>() {
-                ui::report::print_error(err)
+                uvman::ui::report::print_error(err)
             } else {
-                ui::report::print_error_message(&report.to_string())
+                uvman::ui::report::print_error_message(&report.to_string())
             };
             std::process::ExitCode::from(code)
         },
     }
-}
-
-#[tokio::main]
-async fn _main() -> Result<()> {
-    let cli = cli::Cli::parse();
-    ui::report::set_verbose(cli.verbose);
-    ui::report::set_quiet(cli.quiet);
-    // Honor the NO_COLOR convention (https://no-color.org)
-    if std::env::var_os("NO_COLOR").is_some() {
-        ui::report::set_color(false);
-    }
-    if cli.version {
-        cli::version::Version { json: false }.run().await?;
-        return Ok(());
-    }
-    if let Some(cmd) = cli.command {
-        cmd.run().await?;
-    } else {
-        // A bare `uvman` should be immediately useful: show the full help
-        // (on stdout, exit 0) instead of printing nothing.
-        cli::Cli::command().print_help()?;
-    }
-    Ok(())
 }
