@@ -243,11 +243,12 @@ mod tests {
             .unwrap()
             .len();
         assert_eq!(empty, 0);
-        let empty = serde_json::to_value(json_document(&CurrentTools::default(), root.path(), None))
-            .unwrap()
-            .as_object()
-            .unwrap()
-            .len();
+        let empty =
+            serde_json::to_value(json_document(&CurrentTools::default(), root.path(), None))
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .len();
         assert_eq!(empty, 0);
     }
 }

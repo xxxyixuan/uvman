@@ -249,9 +249,12 @@ pub fn rehash(home: &Path) -> Result<RehashReport, UError> {
         let helper_dir = shims.join(HELPER_DIR);
         fs::create_dir_all(&helper_dir)
             .map_err(|source| UError::FileError { path: helper_dir.clone(), source })?;
-        let template = shim_template(home).ok_or_else(|| UError::SimpleError(
-            "uvman-shim binary not found beside uvman; reinstall uvman to regenerate shims".into(),
-        ))?;
+        let template = shim_template(home).ok_or_else(|| {
+            UError::SimpleError(
+                "uvman-shim binary not found beside uvman; reinstall uvman to regenerate shims"
+                    .into(),
+            )
+        })?;
         let helper = helper_dir.join(shim_binary_name());
         fs::copy(&template, &helper)
             .map_err(|source| UError::FileError { path: helper.clone(), source })?;
@@ -270,7 +273,8 @@ fn write_shim(shims: &Path, helper: &Path, name: &str) -> Result<(), UError> {
     {
         let dest = shims.join(name);
         if name.ends_with(".exe") {
-            fs::copy(helper, &dest).map_err(|source| UError::FileError { path: dest.clone(), source })?;
+            fs::copy(helper, &dest)
+                .map_err(|source| UError::FileError { path: dest.clone(), source })?;
         } else {
             // cmd/bat/ps1 targets: a script wrapper that re-invokes the helper
             // with the intended shim name (the helper alone cannot infer it)
@@ -286,7 +290,8 @@ fn write_shim(shims: &Path, helper: &Path, name: &str) -> Result<(), UError> {
     {
         use std::os::unix::fs::PermissionsExt;
         let dest = shims.join(name);
-        fs::copy(helper, &dest).map_err(|source| UError::FileError { path: dest.clone(), source })?;
+        fs::copy(helper, &dest)
+            .map_err(|source| UError::FileError { path: dest.clone(), source })?;
         fs::set_permissions(&dest, fs::Permissions::from_mode(0o755))
             .map_err(|source| UError::FileError { path: dest, source })?;
         Ok(())
@@ -348,10 +353,7 @@ mod tests {
         let tools = home.join("tools").join("node").join("22.19.0");
 
         if cfg!(windows) {
-            assert_eq!(
-                locate_forward_target(&home, "node.exe"),
-                Some(tools.join("node.exe"))
-            );
+            assert_eq!(locate_forward_target(&home, "node.exe"), Some(tools.join("node.exe")));
             assert_eq!(
                 locate_forward_target(&home, "npm.cmd"),
                 Some(tools.join("bin").join("npm.cmd"))
@@ -403,6 +405,20 @@ mod tests {
         assert_eq!(load_manifest(&shims).generated, vec!["node".to_string()]);
         // Missing manifest reads back empty (list gets regenerated)
         assert!(load_manifest(&dir.path().join("absent")).generated.is_empty());
+    }
+
+    /// Same activation state → the shim forwarder lands on exactly the file
+    /// `which` reports (plan 0.3.0 completion criterion: same source, no
+    /// drift).
+    #[test]
+    fn test_forward_target_matches_which_resolution() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = make_home_with(dir.path(), "node", "22.19.0", &["node.exe"]);
+        let shim_name = if cfg!(windows) { "node.exe" } else { "node" };
+        let via_shim = locate_forward_target(&home, shim_name);
+        let via_which =
+            crate::core::executable::locate(&home.join("tools"), "node", "22.19.0").ok();
+        assert_eq!(via_shim, via_which);
     }
 
     /// Place a fake `uvman-shim` template beside the home dir (the portable

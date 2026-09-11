@@ -141,7 +141,10 @@ impl SelfUpdate {
         }
 
         println!("{} uvman updated to {} (was {current})", style::ogreen("✔"), latest.tag,);
-        report::print_hint("restart your terminal, then check the new version", &["uvman version".into()]);
+        report::print_hint(
+            "restart your terminal, then check the new version",
+            &["uvman version".into()],
+        );
         Ok(())
     }
 

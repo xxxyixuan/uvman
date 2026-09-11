@@ -111,7 +111,8 @@ pub fn backup_current(backup_dir: &Path, value: &StoredPath) -> Result<(), UErro
 }
 
 fn fs_ensure_dir(dir: &Path) -> Result<(), UError> {
-    std::fs::create_dir_all(dir).map_err(|source| UError::FileError { path: dir.to_path_buf(), source })
+    std::fs::create_dir_all(dir)
+        .map_err(|source| UError::FileError { path: dir.to_path_buf(), source })
 }
 
 /// Outcome of an idempotent enable/disable run
@@ -168,7 +169,9 @@ impl<'a> PathEditor<'a> {
         let Some(value) = self.store.read()? else {
             // No PATH value yet: start fresh with just the shims dir
             let items = vec![self.prepend_raw()];
-            return self.write_new(&items, PathValueKind::Expandable).map(|_| EnableReport::Enabled);
+            return self
+                .write_new(&items, PathValueKind::Expandable)
+                .map(|_| EnableReport::Enabled);
         };
         let items = split_items(&value.raw);
         if items.iter().any(|item| self.owns_item(item)) {
@@ -187,7 +190,8 @@ impl<'a> PathEditor<'a> {
             return Ok(DisableReport::AlreadyDisabled);
         };
         let items = split_items(&value.raw);
-        let kept: Vec<String> = items.iter().filter(|item| !self.owns_item(item)).cloned().collect();
+        let kept: Vec<String> =
+            items.iter().filter(|item| !self.owns_item(item)).cloned().collect();
         if kept.len() == items.len() {
             return Ok(DisableReport::AlreadyDisabled);
         }
@@ -232,13 +236,12 @@ impl PathStore for NoopPathStore {
     fn read(&self) -> Result<Option<StoredPath>, UError> {
         Err(UError::SimpleError(
             "the user PATH is managed by the shell on this platform; \
-             use `uvman activate` instead".into(),
+             use `uvman activate` instead"
+                .into(),
         ))
     }
     fn write(&self, _value: &StoredPath) -> Result<(), UError> {
-        Err(UError::SimpleError(
-            "the user PATH is managed by the shell on this platform".into(),
-        ))
+        Err(UError::SimpleError("the user PATH is managed by the shell on this platform".into()))
     }
     fn broadcast(&self) {}
 }
@@ -294,7 +297,7 @@ pub mod registry {
                 PathValueKind::Plain => REG_SZ,
             };
             key.set_raw_value(PATH_VALUE, &RegValue { vtype, bytes: encode_utf16(&value.raw) })
-                .map_err(|source| registry_error(source))?;
+                .map_err(registry_error)?;
             Ok(())
         }
 
@@ -303,7 +306,7 @@ pub mod registry {
             // environment (Explorer forwards it to child processes on next
             // launch; send_timeout so a hung window can't stall the command)
             use windows_sys::Win32::UI::WindowsAndMessaging::{
-                SendMessageTimeoutW, SMTO_ABORTIFHUNG, WM_SETTINGCHANGE, HWND_BROADCAST,
+                HWND_BROADCAST, SMTO_ABORTIFHUNG, SendMessageTimeoutW, WM_SETTINGCHANGE,
             };
             let wide: Vec<u16> = "Environment".encode_utf16().chain(std::iter::once(0)).collect();
             unsafe {
@@ -436,10 +439,8 @@ pub(crate) mod tests {
     #[test]
     fn test_enable_keeps_existing_items_and_kind() {
         let dir = home();
-        let existing = StoredPath {
-            raw: "%USERPROFILE%\\bin;".to_string(),
-            kind: PathValueKind::Expandable,
-        };
+        let existing =
+            StoredPath { raw: "%USERPROFILE%\\bin;".to_string(), kind: PathValueKind::Expandable };
         let store = MemoryStore(RefCell::new(Some(existing)));
         let shims = dir.path().join("shims");
         let backup = dir.path().join("backup");
@@ -476,7 +477,8 @@ pub(crate) mod tests {
     fn test_disable_removes_only_owned_items() {
         let dir = home();
         let shims_display = dir.path().join("shims").to_string_lossy().into_owned();
-        let foreign = if cfg!(windows) { r"C:\Windows\System32".to_string() } else { "/usr/bin".to_string() };
+        let foreign =
+            if cfg!(windows) { r"C:\Windows\System32".to_string() } else { "/usr/bin".to_string() };
         let store = MemoryStore(RefCell::new(Some(StoredPath {
             raw: format!("{shims_display};{foreign}"),
             kind: PathValueKind::Plain,

@@ -11,8 +11,8 @@ use std::path::Path;
 use crate::Result;
 use crate::core::config::UvmanConfig;
 use crate::core::error::UError;
-use crate::core::pathstore::{native_store, PathEditor, PathStore};
 use crate::core::paths;
+use crate::core::pathstore::{PathEditor, PathStore, native_store};
 use crate::core::plugin::ToolPlugin;
 use crate::core::shell::{Shell, is_activated};
 use crate::core::shims;
@@ -215,7 +215,8 @@ fn check_shims(home: &Path, store: &dyn PathStore) -> Check {
         return Check {
             name: "shims",
             status: Status::Ok,
-            detail: "not set up; GUI apps keep using system tools until `uvman shims enable`".into(),
+            detail: "not set up; GUI apps keep using system tools until `uvman shims enable`"
+                .into(),
             fix: None,
         };
     }
@@ -262,7 +263,8 @@ fn check_shims(home: &Path, store: &dyn PathStore) -> Check {
     }
     #[cfg(not(windows))]
     {
-        parts.push("user PATH is shell-owned on this platform; `activate` is the shell path".into());
+        parts
+            .push("user PATH is shell-owned on this platform; `activate` is the shell path".into());
     }
 
     Check {

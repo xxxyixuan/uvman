@@ -184,6 +184,9 @@ impl Shell {
 }
 
 const BASH_TMPL: &str = r#"# --- uvman activate bash ---
+# 剥离只作用于 uvman 自有会话条目（tools/<name>/<version> 前缀），
+# 绝不触碰 <UVMAN_HOME>/shims 的 PATH 条目（shims 是 GUI 场景的
+# 注册表级目录，会话刷新不得误伤；见 0.3.0 环境边界声明）。
 export UVMAN_SHELL=bash
 __UVMAN_STATE='@STATE@'
 __UVMAN_TOOLS='@TOOLS@'

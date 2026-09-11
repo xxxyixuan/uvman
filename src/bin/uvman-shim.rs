@@ -69,8 +69,7 @@ fn launch_command(target: &Path) -> Command {
             },
             "ps1" => {
                 let mut cmd = Command::new("powershell");
-                cmd.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
-                    .arg(target);
+                cmd.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"]).arg(target);
                 cmd
             },
             _ => Command::new(target),

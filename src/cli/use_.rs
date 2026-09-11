@@ -52,10 +52,7 @@ fn print_apply_hint() {
     if is_activated() {
         print_hint("uvman is activated; changes will apply on your next prompt.", &[]);
     } else {
-        print_hint(
-            "to update your current shell environment",
-            &Shell::detect().inject_hint(),
-        );
+        print_hint("to update your current shell environment", &Shell::detect().inject_hint());
     }
 }
 
