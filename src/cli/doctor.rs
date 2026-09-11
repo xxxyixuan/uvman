@@ -11,9 +11,11 @@ use std::path::Path;
 use crate::Result;
 use crate::core::config::UvmanConfig;
 use crate::core::error::UError;
+use crate::core::pathstore::{native_store, PathEditor, PathStore};
 use crate::core::paths;
 use crate::core::plugin::ToolPlugin;
 use crate::core::shell::{Shell, is_activated};
+use crate::core::shims;
 use crate::ui::style;
 
 /// Check the uvman environment for problems
@@ -58,10 +60,16 @@ impl Doctor {
     }
 }
 
-/// Run the four doctor checks against a home dir (`activated` comes from the
+/// Run the doctor checks against a home dir (`activated` comes from the
 /// live environment)
 fn collect(home: &Path, activated: bool) -> Vec<Check> {
-    vec![check_layout(home), check_config(home), check_plugins(home), check_shell(activated)]
+    vec![
+        check_layout(home),
+        check_config(home),
+        check_plugins(home),
+        check_shell(activated),
+        check_shims(home, native_store().as_ref()),
+    ]
 }
 
 /// Subdirs a healthy UVMAN_HOME must have; must stay in sync with
@@ -192,6 +200,76 @@ fn activate_command(shell: Shell) -> Option<String> {
         Shell::Fish => Some("uvman activate | source".into()),
         Shell::PowerShell => Some("uvman activate | Out-String | Invoke-Expression".into()),
         Shell::Cmd => None,
+    }
+}
+
+/// Shims consistency: directory/generation state plus user-PATH wiring.
+///
+/// A missing shims dir is normal for users who never enabled shims (shell
+/// activation is the alternative), so it is not a warning. A present-but-stale
+/// shim set, or an unwired user PATH on Windows, is a warning with a copyable
+/// fix. `store` is injected so tests use an in-memory backend.
+fn check_shims(home: &Path, store: &dyn PathStore) -> Check {
+    let shims_dir = home.join("shims");
+    if !shims_dir.is_dir() {
+        return Check {
+            name: "shims",
+            status: Status::Ok,
+            detail: "not set up; GUI apps keep using system tools until `uvman shims enable`".into(),
+            fix: None,
+        };
+    }
+
+    let desired = shims::active_command_names(home);
+    let existing = shims::manifest_names(&shims_dir);
+    let missing: Vec<&String> =
+        desired.iter().filter(|n| !existing.contains(n) || !shims_dir.join(n).exists()).collect();
+    let unresolvable: Vec<&String> =
+        existing.iter().filter(|n| shims::locate_forward_target(home, n).is_none()).collect();
+
+    let mut status = Status::Ok;
+    let mut parts: Vec<String> = vec![format!("{} in {}", existing.len(), shims_dir.display())];
+    let mut fix_lines: Vec<String> = Vec::new();
+
+    if !missing.is_empty() || !unresolvable.is_empty() {
+        status = Status::Warn;
+        parts.push(format!(
+            "generation stale ({} missing, {} unresolvable)",
+            missing.len(),
+            unresolvable.len()
+        ));
+        fix_lines.push("uvman shims rehash".into());
+    }
+
+    // User-PATH wiring: warn when the shims dir isn't on the path on Windows;
+    // on Unix the PATH is shell-owned and `activate` is the documented path
+    #[cfg(windows)]
+    {
+        let backup = home.join("backup");
+        let editor = PathEditor::new(store, &shims_dir, &backup);
+        match editor.in_path() {
+            Ok(true) => parts.push("wired into the user PATH".into()),
+            Ok(false) => {
+                status = Status::Warn;
+                parts.push("not in the user PATH (GUI apps can't see it)".into());
+                fix_lines.push("uvman shims enable".into());
+            },
+            Err(e) => {
+                status = Status::Warn;
+                parts.push(format!("user PATH unreadable: {e}"));
+            },
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        parts.push("user PATH is shell-owned on this platform; `activate` is the shell path".into());
+    }
+
+    Check {
+        name: "shims",
+        status,
+        detail: parts.join("; "),
+        fix: if fix_lines.is_empty() { None } else { Some(fix_lines.join("; then run ")) },
     }
 }
 
@@ -389,11 +467,41 @@ bin_dir = "bin"
     }
 
     #[test]
-    fn test_collect_covers_four_checks() {
+    fn test_check_shims_missing_dir_is_ok_not_warning() {
+        // Users who never enabled shims are perfectly healthy (activate is
+        // the alternative); a missing dir must not flag anything
+        let dir = make_home();
+        let check = check_shims(dir.path(), &pathstore_test_store(dir.path()));
+        assert_eq!(check.status, Status::Ok);
+    }
+
+    #[test]
+    fn test_check_shims_warns_on_stale_generation() {
+        let home = make_home();
+        let shims_dir = home.path().join("shims");
+        fs::create_dir_all(shims_dir.join(".uvman")).unwrap();
+        // A manifest claiming a shim that no active tool provides → stale
+        fs::write(shims_dir.join(".uvman").join("manifest.toml"), "generated = [\"node.exe\"]\n")
+            .unwrap();
+        fs::write(shims_dir.join("node.exe"), b"junk").unwrap();
+
+        let check = check_shims(home.path(), &pathstore_test_store(home.path()));
+        assert_eq!(check.status, Status::Warn);
+        let fix = check.fix.expect("actionable fix");
+        assert!(fix.contains("uvman shims rehash"), "fix: {fix}");
+    }
+
+    /// An in-memory backend so PATH wiring reads no real registry in tests
+    fn pathstore_test_store(_home: &Path) -> crate::core::pathstore::tests::MemoryStore {
+        crate::core::pathstore::tests::MemoryStore::default()
+    }
+
+    #[test]
+    fn test_collect_covers_five_checks() {
         let home = make_home();
         let checks = collect(home.path(), true);
         let names: Vec<&str> = checks.iter().map(|c| c.name).collect();
-        assert_eq!(names, ["layout", "config", "plugins", "shell"]);
+        assert_eq!(names, ["layout", "config", "plugins", "shell", "shims"]);
         // Unhealthy home propagates to the check results
         assert_eq!(checks.iter().filter(|c| c.status == Status::Fail).count(), 2);
     }

@@ -351,11 +351,12 @@ pub mod registry {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::cell::RefCell;
 
-    /// In-memory store for behavior tests on every platform
+    /// In-memory store for behavior tests on every platform (shared with
+    /// other modules' tests, e.g. the doctor shims check)
     #[derive(Default)]
     pub struct MemoryStore(pub RefCell<Option<StoredPath>>);
 
