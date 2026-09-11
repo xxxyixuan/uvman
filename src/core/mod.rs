@@ -10,6 +10,7 @@ pub mod platform;
 pub mod plugin;
 pub mod resolve;
 pub mod shell;
+pub mod shims;
 pub mod suggest;
 mod types;
 pub mod upgrade;
