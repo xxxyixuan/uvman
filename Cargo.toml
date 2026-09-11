@@ -51,3 +51,9 @@ ratatui-crossterm = "0.1.2"
 [dev-dependencies]
 wiremock = "0.6"
 tempfile = "3.8"
+
+[target.'cfg(windows)'.dependencies]
+# User PATH lives in HKCU\Environment; winreg reads/writes it type-faithfully
+winreg = "0.55"
+# WM_SETTINGCHANGE broadcast so already-running apps pick up the new PATH
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }

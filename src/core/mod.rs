@@ -6,6 +6,7 @@ pub mod file;
 pub mod http;
 pub mod install;
 pub mod paths;
+pub mod pathstore;
 pub mod platform;
 pub mod plugin;
 pub mod resolve;
