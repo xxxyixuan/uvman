@@ -62,6 +62,7 @@ impl Uninstall {
         };
 
         println!("{}", ogreen(message));
+        super::auto_rehash_after_change();
 
         // The uninstalled version was the active one: its record is gone;
         // point back to the newest remaining version when there is one

@@ -62,6 +62,7 @@ impl Install {
                 plan.install_dir.display()
             ))
         );
+        super::auto_rehash_after_change();
         Ok(())
     }
 }

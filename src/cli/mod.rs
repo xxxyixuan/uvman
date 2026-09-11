@@ -69,6 +69,30 @@ impl Commands {
     }
 }
 
+/// Refresh the shim set after a state-changing command
+/// (`install` / `uninstall` / `use`).
+///
+/// Best-effort and quiet by design: failures are warnings and must never block
+/// the command that already succeeded. When the forwarding binary is absent
+/// (template not shipped beside uvman) nothing is done — there is nothing to
+/// copy — and a fresh home with no active tools yet skips creating an empty
+/// `shims/` dir.
+pub(crate) fn auto_rehash_after_change() {
+    use crate::core::current;
+    use crate::core::paths;
+    use crate::core::shims;
+    let home = paths::uvman_home();
+    if !shims::shim_available(&home) {
+        return;
+    }
+    if !home.join("shims").exists() && current::load().tools.is_empty() {
+        return;
+    }
+    if let Err(e) = shims::rehash(&home) {
+        crate::ui::report::print_warning(&format!("failed to refresh shims: {e}"));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

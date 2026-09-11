@@ -30,6 +30,7 @@ impl Use {
 
         println!("{}", ogreen(switch_message(&tool, previous.as_deref(), &resolved)));
         print_apply_hint();
+        super::auto_rehash_after_change();
         Ok(())
     }
 }
