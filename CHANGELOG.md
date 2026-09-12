@@ -2,9 +2,11 @@
 
 uvman 所有显著变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)；每个版本对应一个 GitHub Release，详见各版本链接。
 
-## [Unreleased]
+## [v0.3.0](https://github.com/xxxyixuan/uvman/releases/tag/v0.3.0) — 2026-09-13
 
-### 新增特性（0.3.0 Shims 与 GUI/IDE 场景）
+Shims 与 GUI/IDE 场景：GUI 进程（IDEA、VS Code 等继承 Explorer 环境、感知不到 `activate` 的进程）经 shims 转发目录解析 uvman 管理的工具，`use` 切版本零 PATH 变更，两个场景看到同一激活状态。
+
+### 新增特性
 
 - `uvman-shim` 第二编译目标：按命令名生成的转发器（`<UVMAN_HOME>\shims\<cmd>`），GUI/IDE 进程无需 `activate` 即可解析 uvman 管理的工具；转发与 `which` 同源（共享 `core::resolve` 与可执行定位规则），未激活/目标缺失给出可操作错误
 - `uvman shims <enable|disable|status|rehash>`：管理用户 PATH 中的 shims 目录。`enable` 仅 Windows 写入 `HKCU\Environment\Path`（备份先行、`REG_EXPAND_SZ` 类型保真、广播 `WM_SETTINGCHANGE`，幂等），Unix 降级为 shell profile 手动提示；`disable` 仅移除 uvman 自有条目；`status` 报告目录/一致性/系统工具遮蔽；`rehash` 幂等重建（manifest 驱动清理，不删用户手放文件）

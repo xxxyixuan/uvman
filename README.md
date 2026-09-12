@@ -27,6 +27,7 @@ uvman use node@22
 - **统一命令**：一套 `install` / `use` / `list` 管理所有开发工具
 - **插件驱动**：通过 TOML 声明每个工具的下载源、版本接口、平台映射，新增工具只需写配置，无需修改核心代码
 - **自动激活**：Shell 提示符钩子自动注入版本环境，切换后下一条命令即刻生效
+- **GUI/IDE 场景**：`shims` 转发目录让 IDEA、VS Code 等图形化进程也能解析 uvman 管理的工具，`use` 切版本零 PATH 变更
 - **安全安装**：下载校验 SHA-256，强制重装先备份再操作，失败自动回滚
 - **便携部署**：Windows 下数据与二进制同目录，整体移动即迁移
 - **Rust 编写**：高性能、低内存占用，启动速度毫秒级
@@ -126,6 +127,22 @@ echo 'uvman activate | Out-String | Invoke-Expression' >> $PROFILE
 
 启用后，每次 `uvman use` 切换都会在下一条提示符自动生效，无需手动 `eval` 或重开终端。
 
+### GUI / IDE 场景（可选）
+
+Shell 激活只作用于会话内；IDEA、VS Code 等图形化进程继承 Explorer（注册表）环境，感知不到 `activate` 注入。如需让它们使用 uvman 管理的版本，启用 shims：
+
+```bash
+$ uvman install node@lts        # 先安装工具
+$ uvman use node@lts            # 激活版本（`use` 永不触碰注册表）
+$ uvman shims enable            # 把 <UVMAN_HOME>\shims 写入用户 PATH（仅 Windows 自动写入）
+```
+
+启用后**重启已运行的程序（含 IDEA）**生效；之后 `use` 切换版本会自动重建转发器，GUI 与 shell 看到同一激活状态。
+
+- `uvman shims status` 查看转发器与激活版本是否一致、系统工具遮蔽等
+- `uvman shims rehash` 手动重建；`uvman shims disable` 移除 PATH 中的 shims 条目
+- Linux / macOS 上 `uvman shims enable` 只打印 shell profile 提示（不自动改 profile），或继续使用 `activate`
+
 ### 使用
 
 ```bash
@@ -138,6 +155,8 @@ $ uvman uninstall node           # 卸载整个工具
 $ uvman doctor                   # 环境自检
 $ uvman list                     # 查看所有已安装工具与版本
 $ uvman list node --remote       # 查看远端可用版本
+$ uvman shims enable             # 让 GUI/IDE 使用 uvman 管理版本（Windows）
+$ uvman shims status             # 查看 shims 一致性
 ```
 
 > `uvman use` 与 `uvman install` 一次操作一个工具，如需管理多个工具逐个执行即可。
@@ -154,7 +173,8 @@ $ uvman list node --remote       # 查看远端可用版本
 | `uvman which <tool>`             | 输出当前激活版本可执行文件的绝对路径（供脚本定位实际二进制） |
 | `uvman env`                      | （内部命令）`activate` 的后台求值器，不在 `help` 中显示，`--shell` 指定语法 |
 | `uvman activate`                 | 输出激活脚本，通过提示符钩子自动刷新（支持 bash / zsh / fish / pwsh） |
-| `uvman doctor`                   | 环境自检：`UVMAN_HOME` 布局、配置可解析、插件完整性、shell 激活状态；`--json` 输出结构化报告，有检查失败时退出码为 1 |
+| `uvman shims <enable\|disable\|status\|rehash>` | 管理 GUI/IDE 场景的转发器：`enable` 把 `shims/` 目录写入用户 PATH（Windows 注册表，备份+类型保真+广播；Unix 打印 profile 提示），`disable` 移除自有条目，`status` 报告一致性，`rehash` 幂等重建转发器 |
+| `uvman doctor`                   | 环境自检：`UVMAN_HOME` 布局、配置可解析、插件完整性、shell 激活状态、shims 一致性；`--json` 输出结构化报告，有检查失败时退出码为 1 |
 | `uvman plugin <cmd>`             | 插件管理：`install` / `uninstall` / `list` / `info`  |
 | `uvman version`                  | 显示版本信息（别名 `v`，`-V` 可用），`--json` 输出结构化信息         |
 
@@ -182,6 +202,18 @@ uvman plugin install mytool --path ./mytool.toml   # 安装本地自定义插件
 2. `uvman env` 读取该文件并输出 `UVMAN_<TOOL>_HOME` + PATH 前插语句
 3. `uvman activate` 将环境注入挂在 Shell 提示符钩子上，自动保持最新
 
+### GUI 场景：shims
+
+图形化进程继承 Explorer（注册表）环境，看不到 `activate` 的会话注入。解法是转发器（shim）：用户 PATH 中只放**一个稳定目录** `shims/`，目录内是按命令名生成的转发器（`node.exe` / `npm.cmd` …）。调用时经统一解析入口（`core::resolve`）定位激活版本的真实二进制并透传参数与退出码——与 `which` 完全同源。
+
+```text
+GUI 进程 → shims\node.exe → 解析入口（全局激活）→ tools\node\22.19.0\node.exe
+```
+
+- `install` / `uninstall` / `use` 后自动重建（rehash）；`shims/` 内的 manifest 只清理 uvman 自己生成的文件
+- `use` 切换版本**永不**触碰注册表；注册表写入只发生在 `shims enable` / `disable`（HKCU，备份先行、类型保真、广播 `WM_SETTINGCHANGE`）
+- 边界：shim 转发不注入 `[env]` 自定义环境变量（GUI 进程继承 Explorer 环境，属已知边界）；`activate` 的会话刷新只剥离 `tools/` 前缀条目，不影响 `shims/` 条目
+
 ## 数据布局
 
 数据根目录按平台约定不同：
@@ -195,8 +227,11 @@ uvman plugin install mytool --path ./mytool.toml   # 安装本地自定义插件
 │   ├── uvman.toml        # 全局配置（插件仓库 / 镜像 / 网络 / 缓存 TTL）
 │   ── tool_current.toml # 当前激活版本状态
 ── tools/<tool>/<version>/   # 已安装的工具版本
+── shims/                # 按命令名生成的转发器（GUI/IDE 场景，PATH 稳定目录）
+│   ── .uvman/           # 内部 helper 与 manifest（用户无需关心）
 ── plugins/              # 已安装的 TOML 插件
 ── cache/                # 下载缓存与远端版本缓存（TTL 控制）
+── backup/               # shims enable/disable 写入前的用户 PATH 备份
 ── logs/
 ```
 
@@ -225,10 +260,11 @@ cargo fmt                # 代码格式化
 
 | 路径             | 说明                             |
 |----------------|--------------------------------|
-| `src/cli/`     | 子命令定义与入口                       |
-| `src/core/`    | 配置、路径、插件、平台、Shell 渲染、HTTP、错误处理 |
+| `src/cli/`     | 子命令定义与入口（含 `shims` 命令集）          |
+| `src/core/`    | 配置、路径、插件、平台、解析、Shell 渲染、shims（转发/rehash）、pathstore（用户 PATH）、HTTP、错误处理 |
 | `src/toolset/` | 安装计划与执行、版本解析                   |
 | `src/ui/`      | 颜色输出与报告                        |
+| `src/bin/uvman-shim.rs` | 转发器二进制（GUI/IDE 场景，仅共享 core）    |
 
 ### 贡献指南
 
