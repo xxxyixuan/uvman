@@ -10,18 +10,10 @@ use crate::core::executable;
 use crate::core::paths::tools_dir;
 use crate::core::resolve;
 
-/// Print the absolute path of the executable behind a tool's active version
+/// Print the absolute path of an active tool's executable
 ///
-/// Resolution follows `current`: the globally active version selects
-/// `tools/<tool>/<version>/`, where deploy flattens the plugin's `bin_dir`
-/// contents; its `bin/` subdirectory is probed as well (`env` prepends it to
-/// PATH when present). The executable lookup itself lives in
-/// [`core::executable`] — the same rules `uvman-shim` forwards by, so a shim
-/// resolves exactly what `which` would print.
-///
-/// Unlike `current`, an unanswerable query is an error (exit code non-zero):
-/// no active version, an active version dir deleted by hand, or a deploy
-/// without a matching executable.
+/// Same lookup `uvman-shim` forwards by; an unanswerable query is an error
+/// (non-zero exit).
 #[derive(Debug, clap::Args)]
 #[clap(verbatim_doc_comment)]
 pub struct Which {

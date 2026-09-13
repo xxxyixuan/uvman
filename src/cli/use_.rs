@@ -13,9 +13,8 @@ use crate::ui::style::ogreen;
 pub struct Use {
     /// Tool and version to use, in the form `tool@version`
     ///
-    /// The version must be locally installed. Partial versions and
-    /// aliases are resolved against installed versions:
-    /// e.g.: `node@20.11.0`, `node@22`, `node@latest`, `node`
+    /// Must be locally installed; partial versions and aliases
+    /// resolve, e.g. `node@22`, `node@latest`.
     pub tool_spec: String,
 }
 

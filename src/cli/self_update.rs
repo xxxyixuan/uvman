@@ -19,7 +19,7 @@ use crate::ui::style;
 const DOWNLOAD_RETRIES: u64 = 1;
 const RETRY_DELAY_SECS: u64 = 1;
 
-/// `uvman self-update`
+/// Update uvman itself from GitHub releases
 #[derive(Debug, Args)]
 pub struct SelfUpdate {
     /// Only check for a newer release; never download or install

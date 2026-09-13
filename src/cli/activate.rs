@@ -3,23 +3,18 @@ use crate::core::error::UError;
 use crate::core::paths::{absolute, tool_current_path, tools_dir};
 use crate::core::shell::Shell;
 
-/// Print an activation script that keeps the shell's uvman env in sync.
+/// Print an activation script for the shell
 ///
-/// The script registers a prompt hook (mtime fast-path) that re-evaluates
-/// `uvman env` whenever the state file changes, so `uvman use` applies on
-/// the next prompt without manual refresh (mise-style activate).
-///
-/// Persist in your shell config (put it last, so a custom prompt function
-/// is not overwritten):
+/// Registers a prompt hook that re-evaluates `uvman env` when the state
+/// changes, so `uvman use` applies on the next prompt. Persist in your
+/// shell config (put it last):
 ///
 ///   bash/zsh:  eval "$(uvman activate)"
 ///   fish:      uvman activate | source
 ///   pwsh:      uvman activate | Out-String | Invoke-Expression
-///              (Out-String first, or iex splits multi-line function defs)
 ///
-/// cmd is not supported (no prompt hook): register `uvman env --shell cmd`
-/// under the AutoRun registry value to apply at startup, or run it manually
-/// after each switch.
+/// cmd has no prompt hook: register `uvman env --shell cmd` under AutoRun,
+/// or run it manually after each switch.
 #[derive(Debug, clap::Args)]
 #[clap(verbatim_doc_comment)]
 pub struct Activate {

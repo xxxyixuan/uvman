@@ -15,8 +15,7 @@ use crate::ui::style;
 pub struct Install {
     /// Tool and version to install, in the form `tool@version`
     ///
-    /// Omit the version to install the plugin's default version.
-    /// e.g.: `node@20.11.0`, `node`, `node@22`, `node@latest`
+    /// Omit the version to use the plugin's default; e.g. `node@22`.
     pub tool_spec: String,
 
     /// Reinstall even if the version is already present

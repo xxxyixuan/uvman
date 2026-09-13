@@ -21,9 +21,8 @@ use crate::ui::style::ogreen;
 pub struct Uninstall {
     /// Tool and version to uninstall, in the form `tool@version`
     ///
-    /// Omit the version to remove the whole tool with all of its versions.
-    /// The version is resolved against installed versions, so partial
-    /// versions and aliases work: e.g. `node@22`, `node@latest`, `node`
+    /// Omit the version to remove the whole tool; partial versions and
+    /// aliases resolve, e.g. `node@22`.
     pub tool_spec: String,
 }
 

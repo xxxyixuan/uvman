@@ -15,7 +15,7 @@ use crate::core::shims;
 use crate::ui::report::print_hint;
 use crate::ui::style::{odim, ored, oyellow};
 
-/// Manage the shims directory (GUI/IDE tool resolution via user PATH)
+/// Manage shims on the user PATH for GUI/IDE tool resolution
 #[derive(Debug, clap::Args)]
 #[clap(verbatim_doc_comment)]
 pub struct Shims {
@@ -25,16 +25,13 @@ pub struct Shims {
 
 #[derive(Debug, clap::Subcommand)]
 pub enum ShimsCommand {
-    /// Add `<UVMAN_HOME>\shims` to the user PATH (Windows registry) so GUI
-    /// apps resolve uvman-managed tools; on Unix, print the manual shell
-    /// profile line instead of editing your profile
+    /// Add the shims directory to the user PATH for GUI tool resolution
     Enable,
-    /// Remove uvman's shims entry from the user PATH
+    /// Remove the shims directory from the user PATH
     Disable,
-    /// Report whether shims are wired into the user PATH, consistent with the
-    /// active tools, and warn about shadowing system tools
+    /// Report PATH wiring and shim consistency with active tools
     Status,
-    /// Regenerate the shim forwarders from the active tools (idempotent)
+    /// Regenerate shim forwarders from the active tools
     Rehash,
 }
 

@@ -20,15 +20,12 @@ use crate::ui::style::{odim, ogreen};
 /// prints in full; JSON is never paged.
 const PAGER_THRESHOLD: usize = 50;
 
-/// List installed tools and versions, or a tool's remotely available versions.
+/// List installed tools and versions, or a tool's remote versions.
 ///
-/// Output is newest-first (human and JSON alike). Local listing marks the
-/// active version with `(current)` and always prints in full. Remote listing
-/// marks `(latest)` / `(lts: <codename>)` and narrows by version prefix
-/// (`uvman list node --remote 22`); when more than 50 versions would be
-/// printed on a terminal they open in an interactive pager (`--all` prints
-/// everything directly, and piped/redirected output is never paged). JSON is
-/// always full data.
+/// Output is newest-first; local listings mark the active version
+/// `(current)`, remote ones `(latest)` / `(lts: <codename>)` and filter by
+/// version prefix. Long terminal listings open in a pager; `--json` and
+/// piped output are always full.
 #[derive(Debug, clap::Args)]
 #[clap(verbatim_doc_comment, visible_alias = "ls")]
 pub struct List {

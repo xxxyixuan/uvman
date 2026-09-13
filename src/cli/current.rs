@@ -19,14 +19,11 @@ use crate::core::resolve::{self, Scope};
 use crate::ui::report::print_hint;
 use crate::ui::style::odim;
 
-/// Print the currently active version of each tool, or of one tool.
+/// Print each tool's active version
 ///
-/// With no argument every active tool is listed (name-sorted, columns
-/// aligned); naming a tool prints only that one. A tool without an active
-/// version — or nothing active at all — prints `none` and exits 0: a read-only
-/// query must not fail. `--json` prints the same data as
-/// `{ "<tool>": { "version": "…", "scope": "global" } }`, an empty object when
-/// nothing is active.
+/// Naming a tool prints only that one; no active version prints `none`
+/// and exits 0. `--json` emits `{ "<tool>": { "version": "…",
+/// "scope": "global" } }`.
 #[derive(Debug, clap::Args)]
 #[clap(verbatim_doc_comment)]
 pub struct Current {

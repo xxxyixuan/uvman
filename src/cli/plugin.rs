@@ -15,6 +15,7 @@ use crate::core::plugin::ToolPlugin;
 
 const DEFAULT_REPO_URL: &str = "https://github.com/xxxyixuan/uvman-plugin";
 
+/// Manage tool plugins that extend uvman with new tools
 #[derive(Debug, clap::Args)]
 pub struct Plugin {
     #[clap(subcommand)]
@@ -23,17 +24,17 @@ pub struct Plugin {
 
 #[derive(Debug, clap::Subcommand)]
 pub enum PluginCommand {
-    ///  Install plugin
+    /// Install a plugin from a URL, path, or the default registry
     #[clap(visible_aliases = ["i", "add"])]
     Install(InstallArgs),
-    /// Uninstall plugin
+    /// Uninstall a previously installed plugin
     #[clap(visible_aliases = ["rm", "remove"])]
     Uninstall(UninstallArgs),
-    /// List installed plugins
+    /// List installed plugins or those in the remote repository
     #[clap(visible_alias = "ls")]
     List(ListArgs),
 
-    /// Show plugin information
+    /// Show a plugin's metadata (local or remote)
     #[clap(visible_alias = "show")]
     Info(InfoArgs),
 }
@@ -137,10 +138,7 @@ impl UninstallArgs {
 pub struct ListArgs {
     /// List plugins available in the remote repository
     ///
-    /// Served through a local index cache (`cache/plugins.json`) that refreshes
-    /// itself transparently: fresh cache is used silently, stale cache triggers
-    /// a background refetch, and a failed refetch falls back to the stale
-    /// cache.
+    /// Backed by a transparent local index cache.
     #[clap(long)]
     remote: bool,
 
