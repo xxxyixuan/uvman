@@ -296,7 +296,7 @@ pub mod registry {
                 PathValueKind::Expandable => REG_EXPAND_SZ,
                 PathValueKind::Plain => REG_SZ,
             };
-            key.set_raw_value(PATH_VALUE, &RegValue { vtype, bytes: encode_utf16(&value.raw) })
+            key.set_raw_value(PATH_VALUE, &RegValue { vtype, bytes: encode_utf16(&value.raw).into() })
                 .map_err(registry_error)?;
             Ok(())
         }
