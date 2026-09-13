@@ -2,6 +2,18 @@
 
 uvman 所有显著变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)；每个版本对应一个 GitHub Release，详见各版本链接。
 
+## [v0.3.2](https://github.com/xxxyixuan/uvman/releases/tag/v0.3.2) — 2026-09-13
+
+`uvman list <tool> --remote` 支持按插件的 `display_pattern` 干净显示远程版本；插件文件统一迁移到插件仓库的 `plugins/` 子目录。
+
+### 新增特性
+
+- `uvman list <tool> --remote`：api 插件可配置 `display_pattern`，仅用于列表展示的版本串转换（如 Azul 的 `26.32.203-ca-jdk26.0.2.1` 显示为 `26.0.2.1`），安装/切换仍使用完整原始版本（[22ce698](https://github.com/xxxyixuan/uvman/commit/22ce698)）
+
+### 优化与改进
+
+- 插件仓库目录结构化：插件 `.toml` 文件统一存放于仓库 `plugins/` 子目录，`plugin install` 与远程插件名索引均指向该子目录（[f8e7f0b](https://github.com/xxxyixuan/uvman/commit/f8e7f0b)）
+
 ## [v0.3.1](https://github.com/xxxyixuan/uvman/releases/tag/v0.3.1) — 2026-09-13
 
 `install` 新增 `add` 别名，修复 Windows 注册表 PATH 写入的 UTF-16 编码问题，附带依赖更新与帮助文本精简。
