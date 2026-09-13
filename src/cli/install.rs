@@ -11,7 +11,7 @@ use crate::ui::style;
 
 /// Install a tool at a specific version
 #[derive(Debug, clap::Args)]
-#[clap(verbatim_doc_comment, visible_alias = "i")]
+#[clap(verbatim_doc_comment, visible_aliases = ["i", "add"])]
 pub struct Install {
     /// Tool and version to install, in the form `tool@version`
     ///
