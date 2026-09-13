@@ -15,6 +15,10 @@ use crate::core::plugin::ToolPlugin;
 
 const DEFAULT_REPO_URL: &str = "https://github.com/xxxyixuan/uvman-plugin";
 
+/// Plugin files live in this subdirectory of the plugin repo (the `plugins/`
+/// folder), so the repo root stays free of a pile of `.toml` files
+const PLUGIN_REPO_SUBDIR: &str = "plugins";
+
 /// Manage tool plugins that extend uvman with new tools
 #[derive(Debug, clap::Args)]
 pub struct Plugin {
@@ -440,10 +444,14 @@ fn warn_repo_url_fallback(err: &url::ParseError) {
     }
 }
 
+/// Raw GitHub URL of a plugin file inside the repo's `plugins/` subdirectory
+/// (see [`PLUGIN_REPO_SUBDIR`])
 fn raw_plugin_url(repo_url: &Url, name: &str) -> Result<String, UError> {
     let (owner, repo) = extract_github_owner_repo(repo_url)
         .ok_or_else(|| UError::InvalidGitHubUrl { url: repo_url.to_string() })?;
-    Ok(format!("https://raw.githubusercontent.com/{owner}/{repo}/HEAD/{name}.toml"))
+    Ok(format!(
+        "https://raw.githubusercontent.com/{owner}/{repo}/HEAD/{PLUGIN_REPO_SUBDIR}/{name}.toml"
+    ))
 }
 
 fn parse_plugin_toml(content: &str, name: &str) -> Result<ToolPlugin, UError> {
@@ -507,7 +515,10 @@ async fn fetch_remote_plugin_names() -> Result<Vec<String>, UError> {
     let url = repo_url();
     let (owner, repo) = extract_github_owner_repo(&url)
         .ok_or_else(|| UError::InvalidGitHubUrl { url: url.to_string() })?;
-    let api_url = format!("https://api.github.com/repos/{owner}/{repo}/contents");
+    // List the repo's `plugins/` directory (see [`PLUGIN_REPO_SUBDIR`]) for
+    // the available plugin names
+    let api_url =
+        format!("https://api.github.com/repos/{owner}/{repo}/contents/{PLUGIN_REPO_SUBDIR}");
     // get() already validates the status code; HTTP_CLIENT carries the
     // [plugin].proxy / [network] timeout so the index honors global config
     let response = HTTP_CLIENT.get(&api_url).await?;
@@ -626,13 +637,13 @@ mod tests {
         let url = Url::parse("https://github.com/xxxyixuan/uvman-plugin").unwrap();
         assert_eq!(
             raw_plugin_url(&url, "node").unwrap(),
-            "https://raw.githubusercontent.com/xxxyixuan/uvman-plugin/HEAD/node.toml"
+            "https://raw.githubusercontent.com/xxxyixuan/uvman-plugin/HEAD/plugins/node.toml"
         );
 
         let with_git = Url::parse("https://www.github.com/a/b.git").unwrap();
         assert_eq!(
             raw_plugin_url(&with_git, "make").unwrap(),
-            "https://raw.githubusercontent.com/a/b/HEAD/make.toml"
+            "https://raw.githubusercontent.com/a/b/HEAD/plugins/make.toml"
         );
 
         let non_github = Url::parse("https://gitlab.com/a/b").unwrap();
