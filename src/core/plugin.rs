@@ -99,11 +99,18 @@ impl Registry {
 /// url = "https://..."
 /// version_path = "data.tags"   # optional
 /// version_pattern = "..."      # optional
+/// display_pattern = "..."      # optional; human-readable listing only
 ///
 /// [release]                    # static: use a fixed list in the plugin
 /// source = "static"
 /// versions = ["1.0.0", "1.1.0"]
 /// ```
+///
+/// `display_pattern` never touches the version that install/download and
+/// version resolution use: it only transforms the string `uvman list
+/// <tool> --remote` shows. Vendors that embed a build id in the filename
+/// (e.g. Azul's `26.32.203-ca-jdk26.0.2.1`) use it to display the pure
+/// version (`26.0.2.1`) while downloading the full name.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "source", rename_all = "lowercase")]
 pub enum Release {
@@ -113,6 +120,8 @@ pub enum Release {
         version_path: Option<String>,
         #[serde(default)]
         version_pattern: Option<String>,
+        #[serde(default)]
+        display_pattern: Option<String>,
     },
     Static {
         #[serde(default)]
@@ -259,6 +268,7 @@ mirrors = ["https://npmmirror.com/mirrors/node"]
 source = "api"
 url = "https://nodejs.org/dist/index.json"
 version_pattern = '^v(.*)$'
+display_pattern = '^(.*)$'
 
 [platform]
 os_map = { windows = "win", linux = "linux", macos = "darwin" }
@@ -301,6 +311,13 @@ bin_dir = { windows = "", linux = "bin", macos = "bin" }
         let sources = plugin.registry.sources();
         assert_eq!(sources[0], "https://npmmirror.com/mirrors/node");
         assert!(sources.contains(&"https://nodejs.org/dist".to_string()));
+        // display_pattern round-trips through a full plugin TOML
+        match &plugin.release {
+            Release::Api { display_pattern, .. } => {
+                assert_eq!(display_pattern.as_deref(), Some("^(.*)$"));
+            },
+            _ => panic!("应为 Api 变体"),
+        }
     }
 
     #[test]
@@ -338,10 +355,11 @@ bin_dir = { windows = "", linux = "bin", macos = "bin" }
         )
         .unwrap();
         match api {
-            Release::Api { url, version_path, version_pattern } => {
+            Release::Api { url, version_path, version_pattern, display_pattern } => {
                 assert_eq!(url, "https://nodejs.org/dist/index.json");
                 assert!(version_path.is_none(), "未写的字段应缺省为 None");
                 assert_eq!(version_pattern.as_deref(), Some("^v(.*)$"));
+                assert!(display_pattern.is_none(), "未写的字段应缺省为 None");
             },
             other => panic!("应解析为 Api 变体，实际 {other:?}"),
         }

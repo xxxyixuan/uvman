@@ -114,7 +114,7 @@ impl List {
             .into());
         };
 
-        let mut versions = toolset::remote_versions(tool).await?;
+        let (mut versions, display_pattern) = toolset::remote_versions_with_display(tool).await?;
         sort_remote_desc(&mut versions);
         let currents = current::load();
         let current = currents.tools.get(tool).map(|e| e.version.clone());
@@ -149,7 +149,10 @@ impl List {
         let rows: Vec<VersionRow> = selected
             .iter()
             .map(|v| VersionRow {
+                // The raw version stays the search corpus and the actionable
+                // install/use target; `display` is what the lines print
                 version: v.version.clone(),
+                display: toolset::display_version(&v.version, display_pattern.as_deref()),
                 markers: markers_for(
                     &v.version,
                     current.as_deref(),
@@ -240,7 +243,11 @@ fn installed_desc(name: &str) -> Vec<String> {
 
 /// One row of the pager: a version plus its annotations
 struct VersionRow {
+    /// Raw version: the search corpus and the actionable install/use target
     version: String,
+    /// Human-readable version shown on the line (raw when the plugin has no
+    /// display_pattern)
+    display: String,
     markers: Vec<Marker>,
 }
 
@@ -415,7 +422,10 @@ fn render_pager(
             },
             _ => 0,
         };
-        list.push(Line::from(version_spans(&row.version, &row.markers, matched)));
+        // Highlight length is computed against the raw version but clamped in
+        // version_spans, so a match that exceeds the shorter display string
+        // still renders safely
+        list.push(Line::from(version_spans(&row.display, &row.markers, matched)));
     }
 
     let [header_area, list_area, footer_area]: [Rect; 3] = Layout::vertical([
@@ -494,7 +504,7 @@ fn dim_line(text: String) -> Line<'static> {
 fn print_plain(tool: &str, rows: &[VersionRow]) {
     println!("{}", ogreen(format!("{tool}:")));
     for row in rows {
-        println!("{}", render_version_line(&row.version, &row.markers));
+        println!("{}", render_version_line(&row.display, &row.markers));
     }
 }
 
@@ -504,9 +514,11 @@ fn print_page(tool: &str, rows: &[VersionRow], offset: usize, viewport: usize) {
     println!("{}", ogreen(format!("{tool}:")));
     let end = offset + viewport.min(rows.len() - offset);
     for row in &rows[offset..end] {
-        println!("{}", render_version_line(&row.version, &row.markers));
+        println!("{}", render_version_line(&row.display, &row.markers));
     }
     let (start, total) = (offset + 1, rows.len());
+    // The example keeps the raw version: `use`/`install` resolve against it,
+    // not against the display string
     let example = rows[offset].version.as_str();
     println!("{}", odim(format!("… {start}-{end}/{total} · e.g. uvman use {tool}@{example}")));
 }

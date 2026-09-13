@@ -871,10 +871,25 @@ async fn fetch_api_versions(
 ///   name embeds its expiry (unix seconds, hex):
 ///   `{tool}_remote_version_{expires_at}.json`
 pub async fn remote_versions(name: &str) -> Result<Vec<RemoteVersion>, UError> {
+    Ok(remote_versions_with_display(name).await?.0)
+}
+
+/// Remote versions plus the plugin's optional display pattern, for
+/// human-readable listing: the pattern only transforms what
+/// `uvman list <tool> --remote` prints; version resolution and download keep
+/// using the raw version string.
+pub async fn remote_versions_with_display(
+    name: &str,
+) -> Result<(Vec<RemoteVersion>, Option<String>), UError> {
     let plugin = ToolPlugin::load_from(&paths::plugin_path(name)).map_err(|_| {
         UError::PluginNotInstalled { name: name.to_string(), similar: did_you_mean_installed(name) }
     })?;
-    remote_versions_of(&plugin, name).await
+    let versions = remote_versions_of(&plugin, name).await?;
+    let display = match &plugin.release {
+        Release::Api { display_pattern, .. } => display_pattern.clone(),
+        Release::Static { .. } => None,
+    };
+    Ok((versions, display))
 }
 
 /// Fetch remote versions from an already-loaded plugin (reused by install to
@@ -884,7 +899,7 @@ async fn remote_versions_of(plugin: &ToolPlugin, name: &str) -> Result<Vec<Remot
         Release::Static { versions } => {
             Ok(versions.iter().map(|v| RemoteVersion { version: v.clone(), lts: None }).collect())
         },
-        Release::Api { url, version_path, version_pattern } => {
+        Release::Api { url, version_path, version_pattern, display_pattern: _ } => {
             let dir = paths::cache_versions_dir();
             if let Some(cached) = load_cached_versions(&dir, name) {
                 return Ok(cached);
@@ -992,12 +1007,7 @@ fn apply_version_pattern(
         .into_iter()
         .filter_map(|entry| {
             let caps = re.captures(&entry.version)?;
-            let v = caps
-                .name("version")
-                .or_else(|| caps.get(1))
-                .or_else(|| caps.get(0))?
-                .as_str()
-                .trim();
+            let v = captured_value(&caps).trim();
             if v.is_empty() {
                 None
             } else {
@@ -1005,6 +1015,33 @@ fn apply_version_pattern(
             }
         })
         .collect()
+}
+
+/// The value a pattern run produced: named group `version`, else group 1,
+/// else the whole match (never empty for a successful capture)
+fn captured_value<'h>(caps: &regex::Captures<'h>) -> &'h str {
+    caps.name("version")
+        .or_else(|| caps.get(1))
+        .or_else(|| caps.get(0))
+        .map_or("", |m| m.as_str())
+}
+
+/// Apply a display-only pattern to a version for listing (e.g. strip a vendor
+/// build prefix: `26.32.203-ca-jdk26.0.2.1` → `26.0.2.1`); keep the original
+/// when there is no pattern or no match. Shares the capture rule with
+/// [`apply_version_pattern`]. Never affects version resolution or download.
+pub fn display_version(version: &str, pattern: Option<&str>) -> String {
+    let Some(p) = pattern else {
+        return version.to_string();
+    };
+    let Ok(re) = regex::Regex::new(p) else {
+        return version.to_string();
+    };
+    let Some(caps) = re.captures(version) else {
+        return version.to_string();
+    };
+    let v = captured_value(&caps).trim();
+    if v.is_empty() { version.to_string() } else { v.to_string() }
 }
 
 /// Extract version entries (version + lts metadata) from an API response body
@@ -1585,6 +1622,33 @@ bin_dir = "bin"
                 RemoteVersion { version: "22.0.0".into(), lts: None },
             ]
         );
+    }
+
+    #[test]
+    fn test_display_version() {
+        // Zulu-style build prefix stripped for listing; the raw version (the
+        // download key) is never touched
+        let raw = "26.32.203-ca-jdk26.0.2.1";
+        assert_eq!(
+            display_version(raw, Some(r"^.*-jdk(.*)$")),
+            "26.0.2.1"
+        );
+        // No match → original kept
+        assert_eq!(
+            display_version("25.34.17-ca-jdk25.0.3", Some(r"^.*-jdk(.*)$")),
+            "25.0.3"
+        );
+        // No pattern / invalid pattern / no match → original kept
+        assert_eq!(display_version(raw, None), raw);
+        assert_eq!(display_version(raw, Some("[")), raw);
+        assert_eq!(display_version("plain-version", Some(r"^.*-jdk(.*)$")), "plain-version");
+        // The value of the version_pattern capture group feeds the display pattern
+        let raw = "zulu26.32.203-ca-jdk26.0.2.1-win_x64.zip";
+        let cleaned = apply_version_pattern(
+            vec![RemoteVersion { version: raw.into(), lts: None }],
+            Some(r"^zulu(.*)-win_x64\.zip$"),
+        );
+        assert_eq!(cleaned[0].version, "26.32.203-ca-jdk26.0.2.1");
     }
 
     #[test]
