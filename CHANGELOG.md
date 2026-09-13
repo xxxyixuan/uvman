@@ -2,6 +2,23 @@
 
 uvman 所有显著变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)；每个版本对应一个 GitHub Release，详见各版本链接。
 
+## [v0.3.1](https://github.com/xxxyixuan/uvman/releases/tag/v0.3.1) — 2026-09-13
+
+`install` 新增 `add` 别名，修复 Windows 注册表 PATH 写入的 UTF-16 编码问题，附带依赖更新与帮助文本精简。
+
+### 新增特性
+
+- `uvman add <tool>@<version>`：`install` 新增可见别名 `add`（与既有 `i` 别名并列），习惯用 `add` 安装的用户可直接使用（[3a786f2](https://github.com/xxxyixuan/uvman/commit/3a786f2)）
+
+### 优化与改进
+
+- 精简各命令与子命令的帮助文本，`--help` 输出更紧凑易读（[8d067d5](https://github.com/xxxyixuan/uvman/commit/8d067d5)）
+- 更新依赖版本（[b6554b2](https://github.com/xxxyixuan/uvman/commit/b6554b2)）
+
+### Bug 修复
+
+- 修复 Windows 下写入注册表 PATH 时值字节未显式按 UTF-16 转换的问题，避免编码错误导致 PATH 值异常（[a3d9b02](https://github.com/xxxyixuan/uvman/commit/a3d9b02)）
+
 ## [v0.3.0](https://github.com/xxxyixuan/uvman/releases/tag/v0.3.0) — 2026-09-13
 
 Shims 与 GUI/IDE 场景：GUI 进程（IDEA、VS Code 等继承 Explorer 环境、感知不到 `activate` 的进程）经 shims 转发目录解析 uvman 管理的工具，`use` 切版本零 PATH 变更，两个场景看到同一激活状态。
