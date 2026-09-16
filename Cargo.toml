@@ -58,3 +58,12 @@ tempfile = "3.8"
 winreg = "0.56.0"
 # WM_SETTINGCHANGE broadcast so already-running apps pick up the new PATH
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+
+[profile.release]
+# Size first: `uvman-shim` is copied once per managed command (~30 copies), so
+# every byte saved here is multiplied across the whole shims/ dir. The main
+# binary is shipped once but benefits from the same settings.
+opt-level = "z" # size over speed; switch to "s"/3 if install throughput matters more
+lto = true # whole-program LTO: lets the linker drop unused dependency code
+codegen-units = 1 # one CGU so LTO/dead-code analysis sees the whole crate
+strip = true # drop the symbol table from the shipped binaries
