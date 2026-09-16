@@ -140,6 +140,24 @@ impl SelfUpdate {
             )),
         }
 
+        // The shim forwarder ships beside uvman; refresh it too, otherwise a
+        // later `uvman shims rehash` copies whatever stale forwarder was left
+        // next to the executable. Releases that predate the shim lack it in
+        // the archive — that is fine and must not fail the upgrade.
+        let shim_name = format!("uvman-shim{}", std::env::consts::EXE_SUFFIX);
+        if let Some(new_shim) = install::find_binary(extract_dir.path(), &shim_name) {
+            let shim_target = target.with_file_name(&shim_name);
+            if shim_target.exists() {
+                // Rename-aside covers a shim that temporarily serves a
+                // running process; failure here is non-fatal (uvman itself is
+                // already updated, and rehash will pick up any old forwarder).
+                let _ = install::replace_executable(&shim_target, &new_shim);
+            } else {
+                // First deployment of the shim: the target name is free
+                let _ = std::fs::copy(&new_shim, &shim_target);
+            }
+        }
+
         println!("{} uvman updated to {} (was {current})", style::ogreen("✔"), latest.tag,);
         report::print_hint(
             "restart your terminal, then check the new version",
