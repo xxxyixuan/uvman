@@ -2,6 +2,18 @@
 
 uvman 所有显著变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)；每个版本对应一个 GitHub Release，详见各版本链接。
 
+## [v0.3.3](https://github.com/xxxyixuan/uvman/releases/tag/v0.3.3) — 2026-09-16
+
+uvman-shim 转发逻辑内联为无依赖实现、构建更稳定；release 构建针对二进制体积优化。
+
+### 新增特性
+
+- `uvman-shim` 自带 std-only 转发查找副本，不再依赖 core 模块：`shims/` 下每个转发器保持零依赖，转发逻辑与 `which`/`doctor` 的 core 解析保持同步（通过 shim 内测试守约）（[585c18b](https://github.com/xxxyixuan/uvman/commit/585c18b)）
+
+### 优化与改进
+
+- release 构建优化：`opt-level = "z"` + 全程序 LTO + `strip`，主二进制与每个 shim 副本体积显著缩小（shim 每命令一份拷贝，效果随管理的命令数放大）（[1077b4b](https://github.com/xxxyixuan/uvman/commit/1077b4b)）
+
 ## [v0.3.2](https://github.com/xxxyixuan/uvman/releases/tag/v0.3.2) — 2026-09-13
 
 `uvman list <tool> --remote` 支持按插件的 `display_pattern` 干净显示远程版本；插件文件统一迁移到插件仓库的 `plugins/` 子目录。
