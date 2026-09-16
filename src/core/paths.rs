@@ -54,25 +54,6 @@ fn compute_home() -> PathBuf {
 /// every path helper shares one root instead of re-reading env/current_exe.
 static HOME: LazyLock<PathBuf> = LazyLock::new(compute_home);
 
-/// Home dir as seen from the `uvman-shim` binary.
-///
-/// A shim copy lives at `<home>/shims/<name>`, so home is the parent of the
-/// parent of the running shim executable. `UVMAN_HOME` wins on Windows
-/// (portable override, same semantics as [`compute_home`]); Unix stays fixed
-/// at `~/.uvman` like the main program.
-pub fn shim_home() -> PathBuf {
-    #[cfg(windows)]
-    {
-        if let Ok(p) = std::env::var("UVMAN_HOME") {
-            return PathBuf::from(p);
-        }
-        if let Some(dir) = executable_dir().and_then(|d| d.parent().map(|p| p.to_path_buf())) {
-            return dir;
-        }
-    }
-    user_home().join(".uvman")
-}
-
 /// uvman data root dir (common parent of tools/plugins/cache/config/logs).
 pub fn uvman_home() -> PathBuf {
     HOME.clone()

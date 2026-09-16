@@ -4,11 +4,14 @@
 //! single stable PATH entry GUI/IDE processes see. `locate_forward_target`
 //! resolves a shim invocation to the same executable `which` reports (both go
 //! through the shared resolution entry), and `rehash` regenerates the shim set
-//! from the active tools' deploy dirs. The `uvman-shim` binary only calls
-//! `locate_forward_target`; the main program drives `rehash` and the PATH
-//! wiring (plan 0.3.0).
+//! from the active tools' deploy dirs. The main program drives `rehash` and the
+//! PATH wiring (plan 0.3.0).
+//!
+//! Note: the `uvman-shim` binary no longer calls into this module — it carries
+//! its own `std`-only copy of the lookup so it stays dependency-free (see
+//! `src/bin/uvman-shim.rs`). This copy is what `doctor` / `shims` use; the
+//! `shim_target_matches_core` test in the shim keeps the two in step.
 
-use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -95,19 +98,6 @@ pub fn locate_forward_target(home: &Path, shim_file_name: &str) -> Option<PathBu
         }
     }
     None
-}
-
-/// The file name under `shims/` this process is acting as: an explicit
-/// `UVMAN_SHIM_NAME` (set by the `.cmd`/`.bat` wrappers, whose own name the
-/// helper binary cannot infer) wins; otherwise the copy's own file name.
-pub fn acting_shim_name() -> OsString {
-    if let Some(name) = std::env::var_os("UVMAN_SHIM_NAME") {
-        return name;
-    }
-    std::env::current_exe()
-        .ok()
-        .and_then(|p| p.file_name().map(ToOwned::to_owned))
-        .unwrap_or_default()
 }
 
 /// Manifest of generated shims (under `shims/.uvman/manifest.toml`)
