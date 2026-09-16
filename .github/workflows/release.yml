@@ -55,6 +55,7 @@ jobs:
           set -euxo pipefail
           mkdir -p "$ARCH_NAME"
           cp "target/${{ matrix.target }}/release/uvman" "$ARCH_NAME/uvman"
+          cp "target/${{ matrix.target }}/release/uvman-shim" "$ARCH_NAME/uvman-shim"
           tar -czf "$ARCH_NAME.tar.gz" "$ARCH_NAME"
           sha256sum "$ARCH_NAME.tar.gz" > "$ARCH_NAME.tar.gz.sha256"
 
@@ -65,7 +66,8 @@ jobs:
           $ErrorActionPreference = 'Stop'
           New-Item -ItemType Directory -Path $env:ARCH_NAME -Force | Out-Null
           Copy-Item "target/${{ matrix.target }}/release/uvman.exe" "$env:ARCH_NAME/uvman.exe"
-          Compress-Archive -Path "$env:ARCH_NAME/uvman.exe" -DestinationPath "$env:ARCH_NAME.zip"
+          Copy-Item "target/${{ matrix.target }}/release/uvman-shim.exe" "$env:ARCH_NAME/uvman-shim.exe"
+          Compress-Archive -Path "$env:ARCH_NAME/uvman.exe", "$env:ARCH_NAME/uvman-shim.exe" -DestinationPath "$env:ARCH_NAME.zip"
           (Get-FileHash -Algorithm SHA256 "$env:ARCH_NAME.zip").Hash.ToLower() `
             | Out-File -Encoding ascii "$env:ARCH_NAME.zip.sha256"
 
