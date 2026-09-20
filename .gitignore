@@ -12,5 +12,6 @@ target
 .idea/
 .trae/
 .zcode/
+.workbuddy/
 .workbuddy-ai/
 .tmp/
