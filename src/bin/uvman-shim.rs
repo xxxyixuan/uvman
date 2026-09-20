@@ -5,17 +5,22 @@
 //! environment resolve uvman-managed tools through the stable `shims/` PATH
 //! entry. It forwards by locating the same executable `which` would report.
 //!
-//! # Binary entries only
+//! # Every entry is a forwarder
 //!
-//! On Windows this forwarder serves *executable* command entries (`.exe`).
-//! Script entries (`.cmd` / `.bat` / `.ps1`) never get a forwarder:
-//! `core::shims::rehash` writes the tool's own script into `shims/` with its
-//! `%~dp0` / `$PSScriptRoot` references rebased onto the deploy dir, so the
-//! interpreter reads a real script that still finds its siblings.
+//! There are no script copies anymore: `.cmd` / `.bat` / `.ps1` and bare
+//! shebang scripts all get a forwarder. When the tool ships several file forms
+//! for one command (`npm`, `npm.cmd`, `npm.ps1`), the forwarder picks the form
+//! the invoking terminal would pick natively (git-bash prefers the bare
+//! script, PowerShell the `.ps1`, cmd/GUI the `.exe`/`.cmd`), then runs it via
+//! the matching interpreter (`cmd.exe /c`, `pwsh -File`, a `sh`-family shell).
+//! The script executes inside its deploy dir, so its own self-relative
+//! references (`%~dp0`, `$PSScriptRoot`, `$basedir`, …) resolve natively —
+//! nothing is rewritten.
 //!
 //! On Unix there is no script/executable split — a command is a bare name, and
 //! a `#!/bin/sh` script is one of them. Unix therefore *does* forwarder script
-//! targets too, and the OS handles the shebang itself.
+//! targets too: shebang scripts run through the kernel, extension scripts
+//! (`.sh`/`.zsh`/`.fish`) get their interpreter.
 //!
 //! # Slimming constraint (keep this in mind when editing)
 //!
@@ -32,7 +37,7 @@
 //!   TOML parser (`tool_current.toml` has a fixed, uvman-written shape);
 //! - errors are reported as plain messages instead of going through `UError`.
 //!
-//! The shim stays behaviourally in step with `core::shims::locate_forward_target`
+//! The shim stays behaviourally in step with `core::shims::locate_entry`
 //! (which the main program and `doctor` use) — see `shim_target_matches_core`.
 
 use std::ffi::OsString;
@@ -68,11 +73,9 @@ fn shim_home() -> PathBuf {
 }
 
 /// The command name this process is acting as: the copy's own file name
-/// (`shims/node.exe` acts as `node.exe`). Windows script shims are copies of
-/// the tool's own script rather than this binary, so no override env var
-/// exists; Unix *does* forward script targets, so a shim copied to a name that
-/// no longer matches the resolved deploy entry can be pointed at another
-/// command with `UVMAN_SHIM_AS` — a development aid, never used in a shipped
+/// (`shims/npm.exe` acts as `npm`). Every shim is a copy of this binary
+/// (renamed for its command), so the copy's own name suffices; `UVMAN_SHIM_AS`
+/// overrides it for tests and manual debugging, never used in a shipped
 /// layout.
 fn acting_shim_name() -> OsString {
     match std::env::var("UVMAN_SHIM_AS") {
@@ -89,66 +92,112 @@ fn own_file_name() -> OsString {
         .unwrap_or_default()
 }
 
-/// Strip the binary extension to get the bare command name (`node.exe` ->
-/// `node`); on Unix the file name is already the bare command.
-///
-/// `.exe` is the only shimmable binary extension on Windows, so stripping the
-/// other Windows suffixes would change nothing: `.cmd`/`.bat`/`.ps1` names
-/// classify as scripts and are copied-and-rebased by `rehash` instead of
-/// being forwarded.
+/// Strip the shim's own `.exe` (Windows shims are generated `{command}.exe`)
+/// to get the bare command name; on Unix the file name is already bare.
 fn command_of_shim(file_name: &str) -> &str {
     if !cfg!(windows) {
         return file_name;
     }
-    file_name.trim_end_matches(".exe")
+    file_name.strip_suffix(".exe").unwrap_or(file_name)
 }
 
-/// First existing file among the platform candidates: version-dir root first,
-/// then `bin/`.
-///
-/// Windows probes the deploy extension order because a deploy may ship a
-/// command as an extensionless launcher; `core::executable` keeps the identical
-/// list, and `shim_target_matches_core` guards the two against drift. Script
-/// candidates (`.cmd`/`.bat`/`.ps1`) stay in the list only so the lookup keeps
-/// matching `which`; a Windows shim this binary was copied to never has a
-/// script name (scripts are copied instead), so the ladder is only ever walked
-/// for extensionless Windows commands.
-fn find_executable(version_dir: &Path, name: &str) -> Option<PathBuf> {
-    let bin_dir = version_dir.join("bin");
-    for dir in [version_dir, bin_dir.as_path()] {
-        if cfg!(windows) {
-            for ext in [".exe", ".cmd", ".bat", ".ps1"] {
-                let candidate = dir.join(format!("{name}{ext}"));
-                if candidate.is_file() {
+/// Terminal context the shim is called from, mirroring
+/// `core::shims::classify_terminal` (std-only twin).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TerminalType {
+    Posix,
+    PowerShell,
+    Other,
+}
+
+fn classify_terminal(
+    ostype: Option<&str>, msystem: Option<&str>, shell: Option<&str>, psmodulepath: Option<&str>,
+) -> TerminalType {
+    let posix = ostype.is_some_and(|v| {
+        ["msys", "linux", "darwin", "cygwin", "gnu"].iter().any(|k| v.contains(k))
+    }) || msystem.is_some_and(|v| !v.is_empty())
+        || shell.is_some_and(|v| ["bash", "zsh", "sh", "fish"].iter().any(|k| v.contains(k)));
+    if posix {
+        return TerminalType::Posix;
+    }
+    if psmodulepath.is_some_and(|v| !v.is_empty()) {
+        return TerminalType::PowerShell;
+    }
+    TerminalType::Other
+}
+
+fn detect_terminal() -> TerminalType {
+    classify_terminal(
+        std::env::var("OSTYPE").ok().as_deref(),
+        std::env::var("MSYSTEM").ok().as_deref(),
+        std::env::var("SHELL").ok().as_deref(),
+        std::env::var("PSModulePath").ok().as_deref(),
+    )
+}
+
+/// Whether a file starts with a `#!` shebang (std-only, two-byte peek).
+fn has_shebang(path: &Path) -> bool {
+    use std::io::Read;
+    let mut file = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(_) => return false,
+    };
+    let mut head = [0u8; 2];
+    file.read_exact(&mut head).is_ok() && head == [b'#', b'!']
+}
+
+/// Deployment file forms to probe for `command` in `terminal`'s native order
+/// (twin of `core::shims::command_forms`; Windows only — Unix is a bare name).
+fn command_forms(command: &str, terminal: TerminalType) -> Vec<String> {
+    if !cfg!(windows) {
+        return vec![command.to_string()];
+    }
+    let ext = |e: &str| format!("{command}{e}");
+    match terminal {
+        TerminalType::Posix => {
+            vec![command.to_string(), ext(".cmd"), ext(".bat"), ext(".ps1"), ext(".exe")]
+        },
+        TerminalType::PowerShell => {
+            vec![ext(".ps1"), ext(".cmd"), ext(".bat"), ext(".exe"), command.to_string()]
+        },
+        TerminalType::Other => {
+            vec![ext(".exe"), ext(".cmd"), ext(".bat"), ext(".ps1"), command.to_string()]
+        },
+    }
+}
+
+/// A candidate is usable when it exists and, on Windows, a bare
+/// (no-extension) form only counts as a shebang script — never a stray text
+/// file (twin of `core::shims::form_usable`).
+fn form_usable(candidate: &Path, form: &str) -> bool {
+    if cfg!(windows) && !form.contains('.') {
+        return has_shebang(candidate);
+    }
+    true
+}
+
+/// Resolve the deploy entry for `command` under a terminal's preferred form
+/// order: each active tool's version dir (root first, then `bin/`), first
+/// usable form wins. A tool whose active version is not deployed is skipped,
+/// not fatal (twin of `core::shims::locate_entry`).
+fn locate_entry(home: &Path, command: &str, terminal: TerminalType) -> Option<PathBuf> {
+    let path = home.join("config").join("tool_current.toml");
+    let text = std::fs::read_to_string(path).ok()?;
+    let tools_root = home.join("tools");
+    for (tool, version) in active_versions(&text) {
+        let version_dir = tools_root.join(tool).join(version);
+        if !version_dir.is_dir() {
+            continue;
+        }
+        let bin_dir = version_dir.join("bin");
+        for dir in [version_dir.as_path(), bin_dir.as_path()] {
+            for form in command_forms(command, terminal) {
+                let candidate = dir.join(&form);
+                if candidate.is_file() && form_usable(&candidate, &form) {
                     return Some(candidate);
                 }
             }
-        } else {
-            let candidate = dir.join(name);
-            if candidate.is_file() {
-                return Some(candidate);
-            }
         }
-    }
-    None
-}
-
-/// Locate a same-named executable inside a version dir: root first, then
-/// `bin/` (mirrors the PATH precedence `env` bakes in). Falls back to probing
-/// the platform candidates of the stripped command name (so a `node.exe` shim
-/// still lands on a deploy that ships the launcher extensionless), matching
-/// the `which` rules.
-fn find_named_executable(version_dir: &Path, file_name: &str) -> Option<PathBuf> {
-    let bin_dir = version_dir.join("bin");
-    for dir in [version_dir, bin_dir.as_path()] {
-        let candidate = dir.join(file_name);
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-    let command = command_of_shim(file_name);
-    if command != file_name {
-        return find_executable(version_dir, command);
     }
     None
 }
@@ -180,28 +229,14 @@ fn active_versions(text: &str) -> impl Iterator<Item = (&str, &str)> {
 
 /// Resolve the forward target for a shim invocation.
 ///
-/// The active-tool table is matched against the shim file name: for each active
-/// tool whose version dir is deployed, look for a same-named executable. None
-/// when no active tool provides the command — the shim then reports an
-/// actionable error instead of silently doing nothing.
-///
-/// A tool whose active version is not deployed is skipped, not fatal, so one
-/// hand-deleted version dir cannot hide a later tool that does provide the
-/// command (same rule as `core::shims::locate_deploy_source`).
+/// The shim's own file name (e.g. `npm.exe`) is reduced to the command name
+/// and resolved to the deploy entry in the invoking terminal's preferred form
+/// (see [`classify_terminal`]). None when no active tool provides the command
+/// in any usable form — the shim then reports an actionable error instead of
+/// silently doing nothing.
 fn locate_forward_target(home: &Path, shim_file_name: &str) -> Option<PathBuf> {
-    let path = home.join("config").join("tool_current.toml");
-    let text = std::fs::read_to_string(path).ok()?;
-    let tools_root = home.join("tools");
-    for (tool, version) in active_versions(&text) {
-        let version_dir = tools_root.join(tool).join(version);
-        if !version_dir.is_dir() {
-            continue;
-        }
-        if let Some(target) = find_named_executable(&version_dir, shim_file_name) {
-            return Some(target);
-        }
-    }
-    None
+    let command = command_of_shim(shim_file_name);
+    locate_entry(home, command, detect_terminal())
 }
 
 /// The interpreter to run a non-native script target with (Unix only).
@@ -231,14 +266,34 @@ fn interpreter_for(target: &Path) -> Option<&'static str> {
     None
 }
 
+/// The sh-family interpreter to run a bare shebang script with: `sh` when
+/// present, else `bash` (git-bash/MSYS setups), else `sh` anyway — the spawn
+/// failure surfaces as an actionable error from `forward`.
+#[cfg(windows)]
+fn shell_interpreter() -> &'static str {
+    let program = |name: &str| {
+        std::env::var_os("PATH").is_some_and(|path| {
+            std::env::split_paths(&path)
+                .any(|dir| dir.join(name).is_file() || dir.join(format!("{name}.exe")).is_file())
+        })
+    };
+    if program("sh") {
+        "sh"
+    } else if program("bash") {
+        "bash"
+    } else {
+        "sh"
+    }
+}
+
 /// Build the command that runs `target` with the shim's own argv.
 ///
-/// Windows never reaches the script cases here: `.cmd`/`.bat`/`.ps1` entries
-/// are copied-and-rebased into `shims/` by `rehash` and read by their own
-/// interpreter, while a forwarder copy always acts as a binary command. The
-/// `cmd.exe` / PowerShell branches therefore exist for completeness and for a
-/// hand-copied shim; they keep the argument with the script's own path so the
-/// interpreter receives it as `%0` / `$MyInvocation`.
+/// Windows routes scripts through their interpreters: `.cmd`/`.bat` via
+/// `cmd.exe /c`, `.ps1` via `pwsh` (fallback `powershell.exe`) with
+/// `-NoProfile -ExecutionPolicy Bypass -File`, and a bare file with a shebang
+/// through a `sh`-family shell (git-bash/MSYS provide one). A binary or a bare
+/// file without a shebang runs directly. Unix: extension scripts get their
+/// interpreter, everything else runs as itself.
 fn build_command(target: &Path) -> Command {
     #[cfg(windows)]
     {
@@ -256,6 +311,13 @@ fn build_command(target: &Path) -> Command {
                     .arg("Bypass")
                     .arg("-File")
                     .arg(target);
+                cmd
+            },
+            "" if has_shebang(target) => {
+                // Bare shebang script: the kernel won't interpret it, so run
+                // it through the shell interpreter that is available
+                let mut cmd = Command::new(shell_interpreter());
+                cmd.arg(target);
                 cmd
             },
             _ => Command::new(target),
@@ -287,9 +349,7 @@ fn powershell() -> OsString {
 /// Spawn the resolved target and forward stdio + exit code.
 ///
 /// A binary target is executed directly on both platforms. The command shape
-/// for script targets lives in [`build_command`] — on Windows it never applies
-/// to a shim this program was copied to, on Unix it is the shebang/no-shebang
-/// indirection the kernel cannot perform itself.
+/// for script targets lives in [`build_command`].
 fn forward(target: &Path) -> ExitCode {
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
     let status = match build_command(target).args(&args).status() {
@@ -357,12 +417,62 @@ mod tests {
     fn test_command_of_shim_names() {
         if cfg!(windows) {
             assert_eq!(command_of_shim("node.exe"), "node");
-            // Script names never reach a forwarder, but stripping must still be
-            // a no-op-ish pass so the candidate probe stays sane
-            assert_eq!(command_of_shim("npm.cmd"), "npm.cmd");
+            assert_eq!(command_of_shim("npm.exe"), "npm");
+            // Already-bare names pass through
+            assert_eq!(command_of_shim("make"), "make");
         } else {
             assert_eq!(command_of_shim("node"), "node");
         }
+    }
+
+    /// Terminal classification mirrors the core rule (Posix beats PowerShell
+    /// when both are hinted).
+    #[test]
+    fn test_classify_terminal_rule() {
+        assert_eq!(
+            classify_terminal(Some("msys"), None, None, Some("C:\\ps")),
+            TerminalType::Posix
+        );
+        assert_eq!(classify_terminal(None, Some("MINGW64"), None, None), TerminalType::Posix);
+        assert_eq!(classify_terminal(None, None, Some("/bin/sh"), None), TerminalType::Posix);
+        assert_eq!(
+            classify_terminal(None, None, None, Some("C:\\Windows\\Modules")),
+            TerminalType::PowerShell
+        );
+        assert_eq!(classify_terminal(None, None, None, None), TerminalType::Other);
+    }
+
+    /// Windows-only: the command form selection for a multi-form command must
+    /// respect the terminal (bare for posix, .ps1 for PowerShell, .cmd for
+    /// cmd/GUI).
+    #[test]
+    fn test_locate_entry_selects_per_terminal() {
+        if !cfg!(windows) {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        let version_dir = home.join("tools").join("node").join("22.19.0");
+        std::fs::create_dir_all(&version_dir).unwrap();
+        std::fs::write(version_dir.join("npm"), "#!/usr/bin/env sh\necho bare\n").unwrap();
+        std::fs::write(version_dir.join("npm.cmd"), "@echo off\r\necho cmd\r\n").unwrap();
+        std::fs::write(version_dir.join("npm.ps1"), "Write-Output 'ps1'\r\n").unwrap();
+        std::fs::create_dir_all(home.join("config")).unwrap();
+        std::fs::write(
+            home.join("config").join("tool_current.toml"),
+            "[node]\nversion = \"22.19.0\"\n",
+        )
+        .unwrap();
+
+        assert_eq!(locate_entry(home, "npm", TerminalType::Posix), Some(version_dir.join("npm")));
+        assert_eq!(
+            locate_entry(home, "npm", TerminalType::PowerShell),
+            Some(version_dir.join("npm.ps1"))
+        );
+        assert_eq!(
+            locate_entry(home, "npm", TerminalType::Other),
+            Some(version_dir.join("npm.cmd"))
+        );
     }
 
     /// End-to-end: a deployed active version resolves; an absent one does not.
@@ -397,31 +507,6 @@ mod tests {
     fn test_locate_forward_target_without_table() {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(locate_forward_target(dir.path(), "node"), None);
-    }
-
-    /// A `node.exe` shim must land on the deploy's actual launcher even when
-    /// the file name differs, matching `which`'s probe order: the exact name
-    /// misses, so the stripped command name is probed though the extension
-    /// ladder.
-    #[test]
-    fn test_locate_forward_target_strips_extension_to_probe() {
-        if !cfg!(windows) {
-            return;
-        }
-        let dir = tempfile::tempdir().unwrap();
-        let home = dir.path();
-        let version_dir = home.join("tools").join("node").join("22.19.0");
-        std::fs::create_dir_all(&version_dir).unwrap();
-        // No `node.exe` deployed; the command lives under another extension
-        std::fs::write(version_dir.join("node.cmd"), b"@echo off\r\n").unwrap();
-        std::fs::create_dir_all(home.join("config")).unwrap();
-        std::fs::write(
-            home.join("config").join("tool_current.toml"),
-            "[node]\nversion = \"22.19.0\"\n",
-        )
-        .unwrap();
-
-        assert_eq!(locate_forward_target(home, "node.exe"), Some(version_dir.join("node.cmd")));
     }
 
     /// A tool whose active version dir is missing must not hide a later tool
@@ -501,6 +586,30 @@ mod tests {
         assert!(argv.contains(&"Bypass".to_string()));
     }
 
+    /// Windows: a bare file with a shebang is run through a sh-family shell, a
+    /// bare file without one is executed directly.
+    #[cfg(windows)]
+    #[test]
+    fn test_build_command_windows_bare_shebang() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("tool");
+        std::fs::write(&script, "#!/bin/sh\necho hi\n").unwrap();
+        let cmd = build_command(&script);
+        let program = cmd.get_program().to_string_lossy().to_lowercase();
+        assert!(
+            program == "sh" || program == "bash",
+            "bare shebang runs through sh-family shell, got {program}"
+        );
+
+        let plain = dir.path().join("plain");
+        std::fs::write(&plain, "not a script").unwrap();
+        let cmd = build_command(&plain);
+        assert_eq!(
+            cmd.get_program().to_string_lossy().to_lowercase(),
+            plain.to_string_lossy().to_lowercase()
+        );
+    }
+
     /// The `UVMAN_SHIM_AS` override wins over the copy's own file name (used by
     /// tests and manual debugging).
     #[test]
@@ -514,18 +623,23 @@ mod tests {
     }
 
     /// Drift guard: the shim carries its own `std`-only copy of the lookup, so
-    /// it must agree with the lib copy that `doctor` / `shims` use.
+    /// it must agree with the lib copy that `doctor` / `shims` use — for every
+    /// terminal, a multi-form command must resolve to the same concrete file.
     #[test]
     fn shim_target_matches_core() {
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path();
         let version_dir = home.join("tools").join("node").join("22.19.0");
-        std::fs::create_dir_all(version_dir.join("bin")).unwrap();
-        // Binary entries only — Windows script entries are copied by rehash
-        // and never forwarded, so they are not part of this contract
-        let (node, npm) = if cfg!(windows) { ("node.exe", "npm.exe") } else { ("node", "npm") };
-        std::fs::write(version_dir.join(node), b"binary").unwrap();
-        std::fs::write(version_dir.join("bin").join(npm), b"binary").unwrap();
+        std::fs::create_dir_all(&version_dir).unwrap();
+        if cfg!(windows) {
+            std::fs::write(version_dir.join("node.exe"), b"binary").unwrap();
+            std::fs::write(version_dir.join("npm"), "#!/usr/bin/env sh\n").unwrap();
+            std::fs::write(version_dir.join("npm.cmd"), b"@echo off\r\n").unwrap();
+            std::fs::write(version_dir.join("npm.ps1"), b"Write-Output hi\r\n").unwrap();
+        } else {
+            std::fs::write(version_dir.join("node"), b"binary").unwrap();
+            std::fs::write(version_dir.join("npm"), "#!/usr/bin/env sh\n").unwrap();
+        }
         std::fs::create_dir_all(home.join("config")).unwrap();
         std::fs::write(
             home.join("config").join("tool_current.toml"),
@@ -533,12 +647,18 @@ mod tests {
         )
         .unwrap();
 
-        for shim in [node, npm] {
-            assert_eq!(
-                locate_forward_target(home, shim),
-                uvman::core::shims::locate_forward_target(home, shim),
-                "shim and core must resolve {shim} identically"
+        for terminal in [TerminalType::Posix, TerminalType::PowerShell, TerminalType::Other] {
+            let shim_pick = locate_entry(home, &command_of_shim("npm.exe"), terminal);
+            let core_pick = uvman::core::shims::locate_entry(
+                home,
+                "npm",
+                match terminal {
+                    TerminalType::Posix => uvman::core::shims::TerminalType::Posix,
+                    TerminalType::PowerShell => uvman::core::shims::TerminalType::PowerShell,
+                    TerminalType::Other => uvman::core::shims::TerminalType::Other,
+                },
             );
+            assert_eq!(shim_pick, core_pick, "shim and core diverge for {terminal:?}");
         }
     }
 }
