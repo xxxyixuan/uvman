@@ -2,6 +2,23 @@
 
 uvman 所有显著变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)；每个版本对应一个 GitHub Release，详见各版本链接。
 
+## [v0.3.5](https://github.com/xxxyixuan/uvman/releases/tag/v0.3.5) — 2026-09-20
+
+修复 0.3.4 引入的 shims 脚本入口失效问题：`.cmd`/`.bat`/`.ps1` 复制到 `shims/` 后，脚本内的 `%~dp0` / `$PSScriptRoot` 会解析到 `shims/` 而非真实部署目录，导致 `npm --version` 等命令报 `Cannot find module ... npm-prefix.js`。现在生成脚本入口时会把这类自引用重写到部署目录的绝对路径。
+
+### Bug 修复
+
+- 修复 0.3.4 起脚本类 shim 全面失效的问题：`npm --version` 报 `Cannot find module '<shims>\node_modules\npm\bin\npm-prefix.js'`、`Could not determine Node.js install directory`。根因是脚本入口按「逐字节复制」生成，但其 `%~dp0` / `$PSScriptRoot` 是相对于脚本自身位置的，复制到 `shims/` 后全部指向错误目录
+- 脚本入口改为「复制 + 自引用重写」：`rehash` 生成 `.cmd`/`.bat`/`.ps1` 入口时，把自引用 token 替换为部署目录绝对路径（`%~dp0\node_modules\...` → `E:\...\tools\node\<ver>\node_modules\...`），其余字节（CRLF、编码、注释）原样保留
+- 重写规则按「实际会解析的相对引用」精确匹配，避免误伤：批处理只重写后接路径片段或 `%VAR%` 跳转的 `%~dp0`；PowerShell 只重写直接拼路径的裸 `$PSScriptRoot`（`"$PSScriptRoot\node"`），保留 `Join-Path $PSScriptRoot` / `$PSScriptRoot + '\'` / `$env:PSScriptRoot` 等显式全局前缀用法
+- 分隔符按脚本原样保留：`%~dp0/x` 保持 `/`（npm 的 `npm.ps1` 依赖此形式），`%~dp0\x` 保持 `\`，不产生混用分隔符的路径
+
+### 优化与改进
+
+- 一致性校验升级：脚本入口的「漂移」判定从「与部署源逐字节一致」改为「与当前重写结果一致」，因此旧版本（0.3.4）生成的失效副本会被 `uvman shims status` / `doctor` 识别为过期并提示 `uvman shims rehash`
+- `uvman-shim` 转发器补全解释器间接调用（满足「转发 cmd / ps1 / bash 等脚本命令」的契约）：Windows 下 `.cmd`/`.bat` 走 `cmd.exe /c`、`.ps1` 走 `pwsh`（回退 `powershell.exe`）`-NoProfile -ExecutionPolicy Bypass -File`；Unix 下 `.sh`/`.zsh`/`.fish` 等内核无法直接启动的脚本走对应解释器，裸名与 shebang 脚本仍由内核直接执行
+- 新增 `UVMAN_SHIM_AS` 环境变量，可覆盖转发器自身识别到的命令名（仅供测试与手工调试，正式布局不使用）
+
 ## [v0.3.4](https://github.com/xxxyixuan/uvman/releases/tag/v0.3.4) — 2026-09-20
 
 `shims/` 入口按源文件类型分两种生成方式：可执行程序生成转发器，脚本文件（Windows `.ps1`/`.cmd`/`.bat`）逐字节复制原文，脚本相对路径依赖在 shims 内原位解析；一致性校验同时覆盖两类入口。
