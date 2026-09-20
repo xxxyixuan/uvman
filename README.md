@@ -139,7 +139,7 @@ $ uvman shims enable            # 把 <UVMAN_HOME>\shims 写入用户 PATH（仅
 
 启用后**重启已运行的程序（含 IDEA）**生效；之后 `use` 切换版本会自动重建转发器，GUI 与 shell 看到同一激活状态。
 
-- `uvman shims status` 查看转发器与激活版本是否一致、系统工具遮蔽等
+- `uvman shims status` 查看 shims 与激活版本是否一致、系统工具遮蔽等
 - `uvman shims rehash` 手动重建；`uvman shims disable` 移除 PATH 中的 shims 条目
 - Linux / macOS 上 `uvman shims enable` 只打印 shell profile 提示（不自动改 profile），或继续使用 `activate`
 
@@ -173,7 +173,7 @@ $ uvman shims status             # 查看 shims 一致性
 | `uvman which <tool>`             | 输出当前激活版本可执行文件的绝对路径（供脚本定位实际二进制） |
 | `uvman env`                      | （内部命令）`activate` 的后台求值器，不在 `help` 中显示，`--shell` 指定语法 |
 | `uvman activate`                 | 输出激活脚本，通过提示符钩子自动刷新（支持 bash / zsh / fish / pwsh） |
-| `uvman shims <enable\|disable\|status\|rehash>` | 管理 GUI/IDE 场景的转发器：`enable` 把 `shims/` 目录写入用户 PATH（Windows 注册表，备份+类型保真+广播；Unix 打印 profile 提示），`disable` 移除自有条目，`status` 报告一致性，`rehash` 幂等重建转发器 |
+| `uvman shims <enable\|disable\|status\|rehash>` | 管理 GUI/IDE 场景的入口：`enable` 把 `shims/` 目录写入用户 PATH（Windows 注册表，备份+类型保真+广播；Unix 打印 profile 提示），`disable` 移除自有条目，`status` 报告一致性，`rehash` 幂等重建（可执行程序生成转发器、脚本逐字节复制原文） |
 | `uvman doctor`                   | 环境自检：`UVMAN_HOME` 布局、配置可解析、插件完整性、shell 激活状态、shims 一致性；`--json` 输出结构化报告，有检查失败时退出码为 1 |
 | `uvman plugin <cmd>`             | 插件管理：`install` / `uninstall` / `list` / `info`  |
 | `uvman version`                  | 显示版本信息（别名 `v`，`-V` 可用），`--json` 输出结构化信息         |
@@ -204,15 +204,26 @@ uvman plugin install mytool --path ./mytool.toml   # 安装本地自定义插件
 
 ### GUI 场景：shims
 
-图形化进程继承 Explorer（注册表）环境，看不到 `activate` 的会话注入。解法是转发器（shim）：用户 PATH 中只放**一个稳定目录** `shims/`，目录内是按命令名生成的转发器（`node.exe` / `npm.cmd` …）。调用时经统一解析入口（`core::resolve`）定位激活版本的真实二进制并透传参数与退出码——与 `which` 完全同源。
+图形化进程继承 Explorer（注册表）环境，看不到 `activate` 的会话注入。解法是 shims：用户 PATH 中只放**一个稳定目录** `shims/`，目录内是按命令名生成的入口。入口按文件类型分两种生成方式：
+
+| 源文件类型 | 生成方式 | 调用链 |
+| ---------- | -------- | ------ |
+| 可执行程序（**Windows**：`.exe`；**Unix**：无扩展名二进制） | 转发器（`uvman-shim` 的拷贝），调用时经统一解析入口（`core::resolve`）定位激活版本的真实二进制并透传参数与退出码——与 `which` 完全同源 | GUI → `shims\node.exe` → 解析入口 → `tools\node\22.19.0\node.exe` |
+| 脚本文件（仅 Windows：`.ps1` / `.cmd` / `.bat`） | **逐字节复制**工具自带的原始脚本到 `shims/`（不经转发） | GUI → `shims\npm.cmd`（就是那支原脚本本身） |
+
+脚本之所以必须「复制原文」而不是包一层转发：脚本普遍用 `%~dp0` / `$PSScriptRoot` 定位同级依赖（如 `npm.cmd` 需要紧邻 `node.exe` 与 `node_modules/`），一旦被放进 `shims/` 再另起进程转发，脚本自身所在的目录就变了，相对路径与相对依赖随之失效。复制原文后脚本在 `shims/` 内按原语义执行。
 
 ```text
-GUI 进程 → shims\node.exe → 解析入口（全局激活）→ tools\node\22.19.0\node.exe
+可执行程序（转发）            脚本文件（复制原文）
+GUI → shims\node.exe          GUI → shims\npm.cmd
+    → 解析入口（全局激活）          → 逐字节同 tools\node\22.19.0\npm.cmd
+    → tools\node\22.19.0\node.exe   （相对依赖就地在 shims\ 解析）
 ```
 
 - `install` / `uninstall` / `use` 后自动重建（rehash）；`shims/` 内的 manifest 只清理 uvman 自己生成的文件
+- 两种入口都在每次 `rehash` / `status` / `doctor` 时做一致性校验：转发器检查「是否仍能解析到激活版本的真实二进制」，脚本入口检查「与部署源是否逐字节一致」，任一漂移都会提示 `uvman shims rehash`
 - `use` 切换版本**永不**触碰注册表；注册表写入只发生在 `shims enable` / `disable`（HKCU，备份先行、类型保真、广播 `WM_SETTINGCHANGE`）
-- 边界：shim 转发不注入 `[env]` 自定义环境变量（GUI 进程继承 Explorer 环境，属已知边界）；`activate` 的会话刷新只剥离 `tools/` 前缀条目，不影响 `shims/` 条目
+- 边界：转发入口不注入 `[env]` 自定义环境变量（GUI 进程继承 Explorer 环境，属已知边界）；`activate` 的会话刷新只剥离 `tools/` 前缀条目，不影响 `shims/` 条目
 
 ## 数据布局
 
@@ -227,8 +238,9 @@ GUI 进程 → shims\node.exe → 解析入口（全局激活）→ tools\node\2
 │   ├── uvman.toml        # 全局配置（插件仓库 / 镜像 / 网络 / 缓存 TTL）
 │   ── tool_current.toml # 当前激活版本状态
 ── tools/<tool>/<version>/   # 已安装的工具版本
-── shims/                # 按命令名生成的转发器（GUI/IDE 场景，PATH 稳定目录）
+── shims/                # 按命令名生成的入口（GUI/IDE 场景，PATH 稳定目录）
 │   ── .uvman/           # 内部 helper 与 manifest（用户无需关心）
+│                       #   可执行程序 → 转发器；脚本（.ps1/.cmd/.bat）→ 原文复制
 ── plugins/              # 已安装的 TOML 插件
 ── cache/                # 下载缓存与远端版本缓存（TTL 控制）
 ── backup/               # shims enable/disable 写入前的用户 PATH 备份
@@ -261,7 +273,7 @@ cargo fmt                # 代码格式化
 | 路径             | 说明                             |
 |----------------|--------------------------------|
 | `src/cli/`     | 子命令定义与入口（含 `shims` 命令集）          |
-| `src/core/`    | 配置、路径、插件、平台、解析、Shell 渲染、shims（转发/rehash）、pathstore（用户 PATH）、HTTP、错误处理 |
+| `src/core/`    | 配置、路径、插件、平台、解析、Shell 渲染、shims（分类/转发/复制/rehash）、pathstore（用户 PATH）、HTTP、错误处理 |
 | `src/toolset/` | 安装计划与执行、版本解析                   |
 | `src/ui/`      | 颜色输出与报告                        |
 | `src/bin/uvman-shim.rs` | 转发器二进制（GUI/IDE 场景，仅共享 core）    |

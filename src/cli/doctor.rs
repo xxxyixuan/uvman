@@ -209,6 +209,10 @@ fn activate_command(shell: Shell) -> Option<String> {
 /// activation is the alternative), so it is not a warning. A present-but-stale
 /// shim set, or an unwired user PATH on Windows, is a warning with a copyable
 /// fix. `store` is injected so tests use an in-memory backend.
+///
+/// "Stale" covers both shim kinds through `shims::shim_is_broken`: forwarders
+/// whose command no active tool provides, and script copies that went stale
+/// against their deploy source (version switch without a rehash).
 fn check_shims(home: &Path, store: &dyn PathStore) -> Check {
     let shims_dir = home.join("shims");
     if !shims_dir.is_dir() {
@@ -225,19 +229,19 @@ fn check_shims(home: &Path, store: &dyn PathStore) -> Check {
     let existing = shims::manifest_names(&shims_dir);
     let missing: Vec<&String> =
         desired.iter().filter(|n| !existing.contains(n) || !shims_dir.join(n).exists()).collect();
-    let unresolvable: Vec<&String> =
-        existing.iter().filter(|n| shims::locate_forward_target(home, n).is_none()).collect();
+    let stale: Vec<&String> =
+        existing.iter().filter(|n| shims::shim_is_broken(home, &shims_dir, n)).collect();
 
     let mut status = Status::Ok;
     let mut parts: Vec<String> = vec![format!("{} in {}", existing.len(), shims_dir.display())];
     let mut fix_lines: Vec<String> = Vec::new();
 
-    if !missing.is_empty() || !unresolvable.is_empty() {
+    if !missing.is_empty() || !stale.is_empty() {
         status = Status::Warn;
         parts.push(format!(
-            "generation stale ({} missing, {} unresolvable)",
+            "generation stale ({} missing, {} out of date)",
             missing.len(),
-            unresolvable.len()
+            stale.len()
         ));
         fix_lines.push("uvman shims rehash".into());
     }

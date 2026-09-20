@@ -1,9 +1,18 @@
 //! `uvman-shim`: command-name forwarding shim.
 //!
-//! A copy of this binary sits in `<UVMAN_HOME>/shims/` under the command name
+//! A copy of this binary sits in `<UVMAN_HOME>/shims/` under a command name
 //! (e.g. `node.exe`), so GUI/IDE processes that inherit the Explorer
 //! environment resolve uvman-managed tools through the stable `shims/` PATH
 //! entry. It forwards by locating the same executable `which` would report.
+//!
+//! # Binary entries only
+//!
+//! This forwarder serves *executable* command entries (`.exe` on Windows, bare
+//! names on Unix). Script entries (`.cmd` / `.bat` / `.ps1`) never get a
+//! forwarder: `core::shims::rehash` copies the tool's own script into `shims/`
+//! instead, because a bundled script resolves its siblings relative to its own
+//! location (`%~dp0` / `$PSScriptRoot`) and a wrapper would break that. So the
+//! lookup below never needs to find — or launch — a script.
 //!
 //! # Slimming constraint (keep this in mind when editing)
 //!
@@ -27,11 +36,6 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
-/// Subdir of `shims/` holding uvman's private helper binary; never on PATH.
-/// Mirrors `core::shims::HELPER_DIR` — duplicated because depending on the lib
-/// would drag the whole dependency tree back in.
-const HELPER_DIR: &str = ".uvman";
-
 /// Directory of the running executable.
 fn exe_dir() -> Option<PathBuf> {
     std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf()))
@@ -47,56 +51,51 @@ fn user_home() -> PathBuf {
 /// Shims live at `<home>/shims/<name>`, so home is the grandparent of the
 /// running executable. `UVMAN_HOME` wins on Windows (portable override); Unix
 /// stays fixed at `~/.uvman` like the main program.
-///
-/// The `.cmd`/`.bat`/`.ps1` wrappers invoke the private helper copy at
-/// `<home>/shims/<HELPER_DIR>/uvman-shim.exe`, one level deeper — step over
-/// that dir so those shims resolve the same home as `.exe` shims do.
 fn shim_home() -> PathBuf {
     #[cfg(windows)]
     {
         if let Ok(p) = std::env::var("UVMAN_HOME") {
             return PathBuf::from(p);
         }
-        if let Some(dir) = exe_dir() {
-            let base = match dir.file_name().is_some_and(|n| n == HELPER_DIR) {
-                true => dir.parent().map(|p| p.to_path_buf()),
-                false => Some(dir),
-            };
-            if let Some(home) = base.and_then(|d| d.parent().map(|p| p.to_path_buf())) {
-                return home;
-            }
+        if let Some(home) = exe_dir().and_then(|d| d.parent().map(|p| p.to_path_buf())) {
+            return home;
         }
     }
     user_home().join(".uvman")
 }
 
-/// The command name this process is acting as: an explicit `UVMAN_SHIM_NAME`
-/// (set by the `.cmd`/`.bat` wrappers, whose own name the helper binary cannot
-/// infer) wins; otherwise the copy's own file name.
+/// The command name this process is acting as: the copy's own file name
+/// (`shims/node.exe` acts as `node.exe`). Script shims are verbatim copies of
+/// the tool's script rather than this binary, so no override env var exists.
 fn acting_shim_name() -> OsString {
-    if let Some(name) = std::env::var_os("UVMAN_SHIM_NAME") {
-        return name;
-    }
     std::env::current_exe()
         .ok()
         .and_then(|p| p.file_name().map(ToOwned::to_owned))
         .unwrap_or_default()
 }
 
-/// Strip a deploy extension to get the bare command name (`npm.cmd` -> `npm`,
-/// `node.exe` -> `node`); on Unix the file name is already the bare command.
+/// Strip the binary extension to get the bare command name (`node.exe` ->
+/// `node`); on Unix the file name is already the bare command.
+///
+/// Only `.exe` is stripped: this binary is only ever copied to a forwarder
+/// shim, and script entries (`.cmd`/`.bat`/`.ps1`) get a verbatim copy from
+/// `rehash` instead of a forwarder, so they never rely on this fallback.
 fn command_of_shim(file_name: &str) -> &str {
     if !cfg!(windows) {
         return file_name;
     }
-    match file_name.strip_suffix(".cmd").or_else(|| file_name.strip_suffix(".bat")) {
-        Some(stem) => stem,
-        None => file_name.trim_end_matches(".exe").trim_end_matches(".ps1"),
-    }
+    file_name.trim_end_matches(".exe")
 }
 
-/// First existing file among the platform candidates (Windows deploy extension
-/// order; the bare name on Unix): version-dir root first, then `bin/`.
+/// First existing file among the platform candidates: version-dir root first,
+/// then `bin/`.
+///
+/// Windows probes the deploy extension order because a deploy may ship a
+/// command as an extensionless launcher; `core::executable` keeps the identical
+/// list, and `shim_target_matches_core` guards the two against drift. Script
+/// candidates (`.cmd`/`.bat`/`.ps1`) stay in the list only so the lookup keeps
+/// matching `which`; they are never the forward target of a shim this binary
+/// could have been copied to.
 fn find_executable(version_dir: &Path, name: &str) -> Option<PathBuf> {
     let bin_dir = version_dir.join("bin");
     for dir in [version_dir, bin_dir.as_path()] {
@@ -120,8 +119,8 @@ fn find_executable(version_dir: &Path, name: &str) -> Option<PathBuf> {
 /// Locate a same-named executable inside a version dir: root first, then
 /// `bin/` (mirrors the PATH precedence `env` bakes in). Falls back to probing
 /// the platform candidates of the stripped command name (so a `node.exe` shim
-/// still lands on a deploy whose binary is `node.cmd`), matching the `which`
-/// rules.
+/// still lands on a deploy that ships the launcher extensionless), matching
+/// the `which` rules.
 fn find_named_executable(version_dir: &Path, file_name: &str) -> Option<PathBuf> {
     let bin_dir = version_dir.join("bin");
     for dir in [version_dir, bin_dir.as_path()] {
@@ -168,12 +167,19 @@ fn active_versions(text: &str) -> impl Iterator<Item = (&str, &str)> {
 /// tool whose version dir is deployed, look for a same-named executable. None
 /// when no active tool provides the command — the shim then reports an
 /// actionable error instead of silently doing nothing.
+///
+/// A tool whose active version is not deployed is skipped, not fatal, so one
+/// hand-deleted version dir cannot hide a later tool that does provide the
+/// command (same rule as `core::shims::locate_deploy_source`).
 fn locate_forward_target(home: &Path, shim_file_name: &str) -> Option<PathBuf> {
     let path = home.join("config").join("tool_current.toml");
     let text = std::fs::read_to_string(path).ok()?;
     let tools_root = home.join("tools");
     for (tool, version) in active_versions(&text) {
         let version_dir = tools_root.join(tool).join(version);
+        if !version_dir.is_dir() {
+            continue;
+        }
         if let Some(target) = find_named_executable(&version_dir, shim_file_name) {
             return Some(target);
         }
@@ -181,40 +187,16 @@ fn locate_forward_target(home: &Path, shim_file_name: &str) -> Option<PathBuf> {
     None
 }
 
-/// Build the command that actually executes the target file.
-///
-/// `.cmd`/`.bat` targets are launched through `cmd /c` and `.ps1` through
-/// PowerShell (matching how Windows actually executes them); everything else
-/// — including bare-name binaries on Unix — runs directly.
-fn launch_command(target: &Path) -> Command {
-    let ext = target.extension().and_then(|e| e.to_str()).unwrap_or_default().to_ascii_lowercase();
-    if cfg!(windows) {
-        match ext.as_str() {
-            // Scripts are executed by their interpreter; CreateProcess alone
-            // cannot run them (no file association on the raw name)
-            "cmd" | "bat" => {
-                let mut cmd = Command::new("cmd");
-                cmd.arg("/c").arg(target);
-                cmd
-            },
-            "ps1" => {
-                let mut cmd = Command::new("powershell");
-                cmd.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"]).arg(target);
-                cmd
-            },
-            _ => Command::new(target),
-        }
-    } else {
-        // Unix: the bare file may be a script with a shebang — exec directly
-        Command::new(target)
-    }
-}
-
 /// Spawn the resolved target and forward stdio + exit code.
+///
+/// The target is a binary entry (`node.exe`, or a bare name on Unix), so it is
+/// always executed directly: the OS runs it on both platforms, and on Unix a
+/// shebang script needs no interpreter either. Script entries never reach this
+/// point — `rehash` copies those into `shims/` instead of installing a
+/// forwarder, so there is no interpreter indirection to perform here.
 fn forward(target: &Path) -> ExitCode {
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
-    let mut command = launch_command(target);
-    let status = match command.args(&args).status() {
+    let status = match Command::new(target).args(&args).status() {
         Ok(status) => status,
         Err(source) => {
             // Plain message: routing this through `UError` would link the whole
@@ -279,9 +261,9 @@ mod tests {
     fn test_command_of_shim_names() {
         if cfg!(windows) {
             assert_eq!(command_of_shim("node.exe"), "node");
-            assert_eq!(command_of_shim("npm.cmd"), "npm");
-            assert_eq!(command_of_shim("npx.bat"), "npx");
-            assert_eq!(command_of_shim("run.ps1"), "run");
+            // Script names never reach a forwarder, but stripping must still be
+            // a no-op-ish pass so the candidate probe stays sane
+            assert_eq!(command_of_shim("npm.cmd"), "npm.cmd");
         } else {
             assert_eq!(command_of_shim("node"), "node");
         }
@@ -321,8 +303,10 @@ mod tests {
         assert_eq!(locate_forward_target(dir.path(), "node"), None);
     }
 
-    /// A `node.exe` shim must still land on a deploy whose binary is
-    /// `node.cmd` (extension-stripping fallback).
+    /// A `node.exe` shim must land on the deploy's actual launcher even when
+    /// the file name differs, matching `which`'s probe order: the exact name
+    /// misses, so the stripped command name is probed though the extension
+    /// ladder.
     #[test]
     fn test_locate_forward_target_strips_extension_to_probe() {
         if !cfg!(windows) {
@@ -332,7 +316,8 @@ mod tests {
         let home = dir.path();
         let version_dir = home.join("tools").join("node").join("22.19.0");
         std::fs::create_dir_all(&version_dir).unwrap();
-        std::fs::write(version_dir.join("node.cmd"), b"script").unwrap();
+        // No `node.exe` deployed; the command lives under another extension
+        std::fs::write(version_dir.join("node.cmd"), b"@echo off\r\n").unwrap();
         std::fs::create_dir_all(home.join("config")).unwrap();
         std::fs::write(
             home.join("config").join("tool_current.toml"),
@@ -343,6 +328,27 @@ mod tests {
         assert_eq!(locate_forward_target(home, "node.exe"), Some(version_dir.join("node.cmd")));
     }
 
+    /// A tool whose active version dir is missing must not hide a later tool
+    /// (the bug the lib-side scan had): the search continues, it does not bail.
+    #[test]
+    fn test_locate_forward_target_continues_past_undeployed_tool() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        let version_dir = home.join("tools").join("python").join("3.13.1");
+        std::fs::create_dir_all(&version_dir).unwrap();
+        let name = if cfg!(windows) { "python.exe" } else { "python" };
+        std::fs::write(version_dir.join(name), b"binary").unwrap();
+        std::fs::create_dir_all(home.join("config")).unwrap();
+        // `node` sorts first and has no version dir on disk at all
+        std::fs::write(
+            home.join("config").join("tool_current.toml"),
+            "[node]\nversion = \"22.19.0\"\n\n[python]\nversion = \"3.13.1\"\n",
+        )
+        .unwrap();
+
+        assert_eq!(locate_forward_target(home, name), Some(version_dir.join(name)));
+    }
+
     /// Drift guard: the shim carries its own `std`-only copy of the lookup, so
     /// it must agree with the lib copy that `doctor` / `shims` use.
     #[test]
@@ -351,9 +357,11 @@ mod tests {
         let home = dir.path();
         let version_dir = home.join("tools").join("node").join("22.19.0");
         std::fs::create_dir_all(version_dir.join("bin")).unwrap();
-        let (node, npm) = if cfg!(windows) { ("node.exe", "npm.cmd") } else { ("node", "npm") };
+        // Binary entries only — script entries are copied by rehash and never
+        // forwarded, so they are not part of this contract
+        let (node, npm) = if cfg!(windows) { ("node.exe", "npm.exe") } else { ("node", "npm") };
         std::fs::write(version_dir.join(node), b"binary").unwrap();
-        std::fs::write(version_dir.join("bin").join(npm), b"script").unwrap();
+        std::fs::write(version_dir.join("bin").join(npm), b"binary").unwrap();
         std::fs::create_dir_all(home.join("config")).unwrap();
         std::fs::write(
             home.join("config").join("tool_current.toml"),

@@ -197,7 +197,7 @@ fn status() -> Result<()> {
         );
     }
 
-    // 3. Shim ↔ active-tool consistency (stale / missing / unresolvable)
+    // 3. Shim ↔ active-tool consistency (stale / missing / broken)
     let desired = shims::active_command_names(&home);
     let existing = shims::manifest_names(&shims_dir);
     let stale: Vec<&String> = existing.iter().filter(|n| !desired.contains(n)).collect();
@@ -218,8 +218,8 @@ fn status() -> Result<()> {
         warns += 1;
     }
     for name in &existing {
-        if shims::locate_forward_target(&home, name).is_none() {
-            println!("{} shim `{name}` resolves to nothing — run `uvman shims rehash`", warn_str());
+        if shims::shim_is_broken(&home, &shims_dir, name) {
+            println!("{} shim `{name}` is out of date — run `uvman shims rehash`", warn_str());
             warns += 1;
         }
     }
