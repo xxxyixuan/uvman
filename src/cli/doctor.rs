@@ -210,9 +210,9 @@ fn activate_command(shell: Shell) -> Option<String> {
 /// shim set, or an unwired user PATH on Windows, is a warning with a copyable
 /// fix. `store` is injected so tests use an in-memory backend.
 ///
-/// "Stale" covers both shim kinds through `shims::shim_is_broken`: forwarders
-/// whose command no active tool provides, and script copies that went stale
-/// against their deploy source (version switch without a rehash).
+/// "Stale" is measured through `shims::shim_is_broken`: a shim whose command
+/// no active tool provides in any deploy form (version switch without a
+/// rehash).
 fn check_shims(home: &Path, store: &dyn PathStore) -> Check {
     let shims_dir = home.join("shims");
     if !shims_dir.is_dir() {
