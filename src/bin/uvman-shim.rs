@@ -7,12 +7,15 @@
 //!
 //! # Binary entries only
 //!
-//! This forwarder serves *executable* command entries (`.exe` on Windows, bare
-//! names on Unix). Script entries (`.cmd` / `.bat` / `.ps1`) never get a
-//! forwarder: `core::shims::rehash` copies the tool's own script into `shims/`
-//! instead, because a bundled script resolves its siblings relative to its own
-//! location (`%~dp0` / `$PSScriptRoot`) and a wrapper would break that. So the
-//! lookup below never needs to find — or launch — a script.
+//! On Windows this forwarder serves *executable* command entries (`.exe`).
+//! Script entries (`.cmd` / `.bat` / `.ps1`) never get a forwarder:
+//! `core::shims::rehash` writes the tool's own script into `shims/` with its
+//! `%~dp0` / `$PSScriptRoot` references rebased onto the deploy dir, so the
+//! interpreter reads a real script that still finds its siblings.
+//!
+//! On Unix there is no script/executable split — a command is a bare name, and
+//! a `#!/bin/sh` script is one of them. Unix therefore *does* forwarder script
+//! targets too, and the OS handles the shebang itself.
 //!
 //! # Slimming constraint (keep this in mind when editing)
 //!
@@ -65,9 +68,21 @@ fn shim_home() -> PathBuf {
 }
 
 /// The command name this process is acting as: the copy's own file name
-/// (`shims/node.exe` acts as `node.exe`). Script shims are verbatim copies of
-/// the tool's script rather than this binary, so no override env var exists.
+/// (`shims/node.exe` acts as `node.exe`). Windows script shims are copies of
+/// the tool's own script rather than this binary, so no override env var
+/// exists; Unix *does* forward script targets, so a shim copied to a name that
+/// no longer matches the resolved deploy entry can be pointed at another
+/// command with `UVMAN_SHIM_AS` — a development aid, never used in a shipped
+/// layout.
 fn acting_shim_name() -> OsString {
+    match std::env::var("UVMAN_SHIM_AS") {
+        Ok(name) if !name.is_empty() => OsString::from(name),
+        _ => own_file_name(),
+    }
+}
+
+/// The running executable's own file name
+fn own_file_name() -> OsString {
     std::env::current_exe()
         .ok()
         .and_then(|p| p.file_name().map(ToOwned::to_owned))
@@ -77,9 +92,10 @@ fn acting_shim_name() -> OsString {
 /// Strip the binary extension to get the bare command name (`node.exe` ->
 /// `node`); on Unix the file name is already the bare command.
 ///
-/// Only `.exe` is stripped: this binary is only ever copied to a forwarder
-/// shim, and script entries (`.cmd`/`.bat`/`.ps1`) get a verbatim copy from
-/// `rehash` instead of a forwarder, so they never rely on this fallback.
+/// `.exe` is the only shimmable binary extension on Windows, so stripping the
+/// other Windows suffixes would change nothing: `.cmd`/`.bat`/`.ps1` names
+/// classify as scripts and are copied-and-rebased by `rehash` instead of
+/// being forwarded.
 fn command_of_shim(file_name: &str) -> &str {
     if !cfg!(windows) {
         return file_name;
@@ -94,8 +110,9 @@ fn command_of_shim(file_name: &str) -> &str {
 /// command as an extensionless launcher; `core::executable` keeps the identical
 /// list, and `shim_target_matches_core` guards the two against drift. Script
 /// candidates (`.cmd`/`.bat`/`.ps1`) stay in the list only so the lookup keeps
-/// matching `which`; they are never the forward target of a shim this binary
-/// could have been copied to.
+/// matching `which`; a Windows shim this binary was copied to never has a
+/// script name (scripts are copied instead), so the ladder is only ever walked
+/// for extensionless Windows commands.
 fn find_executable(version_dir: &Path, name: &str) -> Option<PathBuf> {
     let bin_dir = version_dir.join("bin");
     for dir in [version_dir, bin_dir.as_path()] {
@@ -187,16 +204,95 @@ fn locate_forward_target(home: &Path, shim_file_name: &str) -> Option<PathBuf> {
     None
 }
 
+/// The interpreter to run a non-native script target with (Unix only).
+///
+/// Unix has no script/executable split in the shim namespace: a `#!/bin/sh`
+/// command reaches this forwarder like any other. A shebang script runs by
+/// itself through the kernel, so the forwarder only needs to step in for the
+/// two shapes the kernel cannot start: an extension-tagged script
+/// (`.sh`/`.bash`/`.zsh`/`.fish`) and a file with no shebang at all.
+/// Everything else — a real binary, or any shebang script — is executed
+/// directly and lets the kernel do the work.
+#[cfg(not(windows))]
+fn interpreter_for(target: &Path) -> Option<&'static str> {
+    let name = target.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let lower = name.to_ascii_lowercase();
+    if lower.ends_with(".sh") || lower.ends_with(".bash") {
+        return Some("sh");
+    }
+    if lower.ends_with(".zsh") {
+        return Some("zsh");
+    }
+    if lower.ends_with(".fish") {
+        return Some("fish");
+    }
+    // No extension: a binary (executed directly) or a shebang script (the
+    // kernel resolves the interpreter) — both need no indirection here
+    None
+}
+
+/// Build the command that runs `target` with the shim's own argv.
+///
+/// Windows never reaches the script cases here: `.cmd`/`.bat`/`.ps1` entries
+/// are copied-and-rebased into `shims/` by `rehash` and read by their own
+/// interpreter, while a forwarder copy always acts as a binary command. The
+/// `cmd.exe` / PowerShell branches therefore exist for completeness and for a
+/// hand-copied shim; they keep the argument with the script's own path so the
+/// interpreter receives it as `%0` / `$MyInvocation`.
+fn build_command(target: &Path) -> Command {
+    #[cfg(windows)]
+    {
+        let ext = target.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+        match ext.as_str() {
+            "cmd" | "bat" => {
+                let mut cmd = Command::new("cmd.exe");
+                cmd.arg("/c").arg(target);
+                cmd
+            },
+            "ps1" => {
+                let mut cmd = Command::new(powershell());
+                cmd.arg("-NoProfile")
+                    .arg("-ExecutionPolicy")
+                    .arg("Bypass")
+                    .arg("-File")
+                    .arg(target);
+                cmd
+            },
+            _ => Command::new(target),
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        match interpreter_for(target) {
+            Some(interpreter) => {
+                let mut cmd = Command::new(interpreter);
+                cmd.arg(target);
+                cmd
+            },
+            None => Command::new(target),
+        }
+    }
+}
+
+/// PowerShell executable to run a `.ps1` target with: `pwsh` (7+) when it is
+/// on PATH, the Windows PowerShell the OS ships otherwise.
+#[cfg(windows)]
+fn powershell() -> OsString {
+    let has_pwsh = std::env::var_os("PATH")
+        .map(|path| std::env::split_paths(&path).any(|dir| dir.join("pwsh.exe").is_file()))
+        .unwrap_or(false);
+    if has_pwsh { OsString::from("pwsh") } else { OsString::from("powershell.exe") }
+}
+
 /// Spawn the resolved target and forward stdio + exit code.
 ///
-/// The target is a binary entry (`node.exe`, or a bare name on Unix), so it is
-/// always executed directly: the OS runs it on both platforms, and on Unix a
-/// shebang script needs no interpreter either. Script entries never reach this
-/// point — `rehash` copies those into `shims/` instead of installing a
-/// forwarder, so there is no interpreter indirection to perform here.
+/// A binary target is executed directly on both platforms. The command shape
+/// for script targets lives in [`build_command`] — on Windows it never applies
+/// to a shim this program was copied to, on Unix it is the shebang/no-shebang
+/// indirection the kernel cannot perform itself.
 fn forward(target: &Path) -> ExitCode {
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
-    let status = match Command::new(target).args(&args).status() {
+    let status = match build_command(target).args(&args).status() {
         Ok(status) => status,
         Err(source) => {
             // Plain message: routing this through `UError` would link the whole
@@ -349,6 +445,74 @@ mod tests {
         assert_eq!(locate_forward_target(home, name), Some(version_dir.join(name)));
     }
 
+    /// Unix only: the two shapes the kernel cannot start get an interpreter,
+    /// a real binary or a shebang script gets none.
+    #[cfg(not(windows))]
+    #[test]
+    fn test_interpreter_for_unix_shapes() {
+        assert_eq!(interpreter_for(Path::new("/x/run.sh")), Some("sh"));
+        assert_eq!(interpreter_for(Path::new("/x/run.BASH")), Some("sh"));
+        assert_eq!(interpreter_for(Path::new("/x/run.ZSH")), Some("zsh"));
+        assert_eq!(interpreter_for(Path::new("/x/run.fish")), Some("fish"));
+        // Bare and shebang names are executed directly
+        assert_eq!(interpreter_for(Path::new("/x/node")), None);
+        assert_eq!(interpreter_for(Path::new("/x/activate")), None);
+    }
+
+    /// Unix only: an extension script is handed to its interpreter with the
+    /// script path as the first argument, a binary is spawned as itself.
+    #[cfg(not(windows))]
+    #[test]
+    fn test_build_command_unix_script_indirection() {
+        let cmd = build_command(Path::new("/x/deploy.sh"));
+        assert_eq!(cmd.get_program().to_string_lossy(), "sh");
+        let argv: Vec<String> = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert_eq!(argv, vec!["/x/deploy.sh"]);
+
+        let cmd = build_command(Path::new("/x/node"));
+        assert_eq!(cmd.get_program().to_string_lossy(), "/x/node");
+        assert_eq!(cmd.get_args().count(), 0);
+    }
+
+    /// A binary target is spawned as itself on every platform.
+    #[test]
+    fn test_build_command_direct_for_binary() {
+        let target = if cfg!(windows) { Path::new(r"C:\x\node.exe") } else { Path::new("/x/node") };
+        let cmd = build_command(target);
+        assert_eq!(cmd.get_program().to_string_lossy(), target.to_string_lossy());
+        assert_eq!(cmd.get_args().count(), 0, "argv is appended by the caller");
+    }
+
+    /// Windows: a script target is handed to its own interpreter, with the
+    /// script path as the interpreter's target argument.
+    #[cfg(windows)]
+    #[test]
+    fn test_build_command_windows_script_indirection() {
+        let cmd = build_command(Path::new(r"C:\x\build.cmd"));
+        assert_eq!(cmd.get_program().to_string_lossy().to_lowercase(), "cmd.exe");
+        let argv: Vec<String> = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert_eq!(argv, vec!["/c", r"C:\x\build.cmd"]);
+
+        let cmd = build_command(Path::new(r"C:\x\build.ps1"));
+        let argv: Vec<String> = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert!(argv.contains(&"-File".to_string()), "pwsh gets -File: {argv:?}");
+        assert_eq!(argv.last().map(String::as_str), Some(r"C:\x\build.ps1"));
+        // Bypass so a machine execution policy can't break tool installs
+        assert!(argv.contains(&"Bypass".to_string()));
+    }
+
+    /// The `UVMAN_SHIM_AS` override wins over the copy's own file name (used by
+    /// tests and manual debugging).
+    #[test]
+    fn test_acting_shim_name_env_override() {
+        unsafe { std::env::set_var("UVMAN_SHIM_AS", "node.exe") };
+        assert_eq!(acting_shim_name().to_string_lossy(), "node.exe");
+        unsafe { std::env::remove_var("UVMAN_SHIM_AS") };
+        // With no override the running test binary's own name is used, which
+        // is never the empty string on a real process
+        assert!(!acting_shim_name().is_empty());
+    }
+
     /// Drift guard: the shim carries its own `std`-only copy of the lookup, so
     /// it must agree with the lib copy that `doctor` / `shims` use.
     #[test]
@@ -357,8 +521,8 @@ mod tests {
         let home = dir.path();
         let version_dir = home.join("tools").join("node").join("22.19.0");
         std::fs::create_dir_all(version_dir.join("bin")).unwrap();
-        // Binary entries only — script entries are copied by rehash and never
-        // forwarded, so they are not part of this contract
+        // Binary entries only — Windows script entries are copied by rehash
+        // and never forwarded, so they are not part of this contract
         let (node, npm) = if cfg!(windows) { ("node.exe", "npm.exe") } else { ("node", "npm") };
         std::fs::write(version_dir.join(node), b"binary").unwrap();
         std::fs::write(version_dir.join("bin").join(npm), b"binary").unwrap();

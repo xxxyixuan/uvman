@@ -7,22 +7,29 @@
 //! active tools' deploy dirs. The main program drives `rehash` and the PATH
 //! wiring (plan 0.3.0).
 //!
-//! # Two shim kinds (`write_shim`)
+//! # Two shim kinds (`ShimKind`)
 //!
-//! A deploy contributes two very different things under one command namespace,
-//! and they must not be generated the same way:
+//! A deployment contributes two very different things under one command namespace,
+//! and each gets the generation strategy that keeps it working from `shims/`:
 //!
-//! - **Binary entries** (`.exe`, Unix bare names) get a *forwarder*: a copy of
-//!   `uvman-shim` that resolves the active version at call time and forwards
+//! - **Binary entries** (`.exe`, Unix bare binaries) get a *forwarder*: a copy
+//!   of `uvman-shim` that resolves the active version at call time and forwards
 //!   argv + stdio + exit code. This is what makes `use` version switching
 //!   PATH-free.
-//! - **Script entries** (`.ps1` / `.cmd` / `.bat`) are *copied verbatim*. A
-//!   forwarder cannot serve them: the interpreter must read the real file, and
-//!   a bundled script resolves its own siblings through `%~dp0` / `$PSScriptRoot`
-//!   — a wrapper in `shims/` breaks that layout (npm's `npm.cmd` is the classic
-//!   case: it must stay next to `npm` and `node_modules/`). A byte-for-byte
-//!   copy keeps every relative reference, argument and exit-code semantic
-//!   exactly as the vendor shipped it.
+//! - **Script entries** (`.ps1` / `.cmd` / `.bat`) are *copied with their
+//!   self-relative references rebased*. A script has to be read by its
+//!   interpreter from `shims/`, so the vendor file itself is the entry — but a
+//!   verbatim copy is not enough: bundled scripts locate their siblings through
+//!   `%~dp0` / `$PSScriptRoot`, and a copy in `shims/` would resolve those to
+//!   `shims/` instead of the deployment dir. `rebase_self_references` rewrites each
+//!   self-reference to the *deploy dir* (absolute), so a `shims/npm.cmd` still
+//!   finds the `node.exe` and `node_modules/` next to the real npm — while
+//!   `--prefix`-style references an explicitly installed global npm (see
+//!   [`rebase_self_references`]) keep pointing at their own target.
+//!
+//! Unix has no script entries: a `#!/bin/sh` script is an executable command
+//! name like any other, so it takes the forwarder and `uvman-shim` performs the
+//! interpreter indirection (see `src/bin/uvman-shim.rs`).
 //!
 //! Note: the `uvman-shim` binary no longer calls into this module — it carries
 //! its own `std`-only copy of the lookup so it stays dependency-free (see
@@ -52,15 +59,17 @@ fn shim_extensions() -> &'static [&'static str] {
     if cfg!(windows) { &[".exe", ".cmd", ".bat", ".ps1"] } else { &[""] }
 }
 
-/// How a shim entry is materialised in `shims/`. The kind is derived from the
-/// *file type* of the deploy entry, never from the command name, and it drives
+/// How a shim entry is materialized in `shims/`. The kind is derived from the
+/// *file type* of the deployment entry, never from the command name, and it drives
 /// both generation and the health checks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShimKind {
-    /// Executable program (`.exe` on Windows, bare name on Unix): a copy of
-    /// the `uvman-shim` forwarder that resolves the active version at call time
+    /// Executable program (`.exe` on Windows, bare binaries and shebang
+    /// scripts on Unix): a copy of the `uvman-shim` forwarder that resolves
+    /// the active version at call time
     Forward,
-    /// Script (`.ps1` / `.cmd` / `.bat`): the tool's own script, copied verbatim
+    /// Windows script (`.ps1` / `.cmd` / `.bat`): the tool's own script, copied
+    /// with its self-relative references rebased to the deployment dir
     Script,
 }
 
@@ -75,7 +84,8 @@ impl ShimKind {
     /// Case-insensitive on Windows: PATHEXT matching ignores case and an
     /// archive may ship `NPM.CMD`, which must still classify as a script.
     /// Scripts (unlike `.bin`/`.psm1`) are the only extensions Windows executes
-    /// by name, which is what makes a verbatim copy a drop-in entry.
+    /// by name, which is what makes a copied-and-rebased script a drop-in
+    /// entry.
     pub fn of(file_name: &str) -> Self {
         if cfg!(windows) {
             let lower = file_name.to_ascii_lowercase();
@@ -86,8 +96,8 @@ impl ShimKind {
         Self::Forward
     }
 
-    /// Whether entries of this kind are copied from the deploy instead of
-    /// being generated as forwarders
+    /// Whether entries of this kind are materialized from the deployment's own
+    /// script instead of being generated as forwarders
     pub fn is_script(self) -> bool {
         matches!(self, Self::Script)
     }
@@ -135,7 +145,7 @@ pub fn locate_deploy_source(
     None
 }
 
-/// Locate the deploy source of a script shim (the verbatim copy source)
+/// Locate the deploy source of a script shim (the copy source)
 pub fn locate_script_source(home: &Path, shim_file_name: &str) -> Option<PathBuf> {
     locate_deploy_source(home, shim_file_name, is_script_entry)
 }
@@ -207,13 +217,12 @@ pub fn active_command_names(home: &Path) -> Vec<String> {
 
 /// Whether an existing shim entry is broken.
 ///
-/// The two kinds fail differently, because only one of them resolves at call
-/// time:
 /// - a **forwarder** is broken when no active tool provides its command (it
 ///   would print "no actively managed tool provides …" at call time);
 /// - a **script copy** is broken when no active version provides that script
 ///   (stale copy, left behind by a version switch), and additionally when the
-///   copy has drifted from its deploy source.
+///   copy has drifted from the rewrite its deploy source now produces — the
+///   deploy moved, or a uvman version changed the rebasing rule.
 ///
 /// Present-but-foreign files (shims a user placed by hand) are never reported:
 /// uvman does not own them.
@@ -222,17 +231,16 @@ pub fn shim_is_broken(home: &Path, shims: &Path, file_name: &str) -> bool {
         ShimKind::Forward => locate_forward_target(home, file_name).is_none(),
         ShimKind::Script => match locate_script_source(home, file_name) {
             None => true,
-            Some(source) => !copies_identical(&source, &shims.join(file_name)),
+            Some(source) => match rendered_script(&source) {
+                // Healthy when the shim IS the current rendering; anything
+                // else (an unrebased pre-0.3.5 copy, a deploy that moved under
+                // a stale shim) is drifted
+                Ok(expected) => !fs::read(shims.join(file_name)).is_ok_and(|have| have == expected),
+                // An unreadable deploy source can't be judged; don't report a
+                // shim nothing can vouch for either way
+                Err(_) => false,
+            },
         },
-    }
-}
-
-/// Byte comparison of a copied shim against its deploy source. A missing or
-/// unreadable copy counts as drifted (the caller reports it).
-fn copies_identical(source: &Path, shim: &Path) -> bool {
-    match (fs::read(source), fs::read(shim)) {
-        (Ok(a), Ok(b)) => a == b,
-        _ => false,
     }
 }
 
@@ -296,11 +304,11 @@ fn executables_in(version_dir: &Path) -> Vec<String> {
 ///   (never touches files a user placed by hand — they aren't in the
 ///   manifest);
 /// - (re)writes one entry per active command name: a forwarder for binary
-///   entries, a verbatim copy of the tool's own script for `.cmd` / `.bat` /
+///   entries, a rebased copy of the tool's own script for `.cmd` / `.bat` /
 ///   `.ps1` (see [`ShimKind`]);
 /// - copies the private helper binary under `shims/<HELPER_DIR>/` before the
-///   forwarders — script entries don't need it, so a tool set made only of
-///   scripts still works without it;
+///   forwarders — scripts don't need it, so a tool set made only of scripts
+///   still works without it;
 /// - records the new set in the manifest. Idempotent: re-running overwrites
 ///   same-name shims only.
 pub fn rehash(home: &Path) -> Result<RehashReport, UError> {
@@ -309,7 +317,7 @@ pub fn rehash(home: &Path) -> Result<RehashReport, UError> {
     // Target set: every command name any active deployed version provides
     let target = active_command_names(home);
 
-    // Stale cleanup is manifest-driven; the manifest dose not track the
+    // Stale cleanup is manifest-driven; the manifest does not track the
     // helper dir, so it is safe to leave it untouched here.
     let previous = load_manifest(&shims);
     let removed: Vec<String> =
@@ -330,7 +338,8 @@ pub fn rehash(home: &Path) -> Result<RehashReport, UError> {
                      reinstall the tool or run `uvman shims rehash` after activating one"
                 ))
             })?;
-            copy_verbatim(&source, &shims.join(name))?;
+            let bytes = rendered_script(&source)?;
+            write_script_shim(&shims.join(name), &bytes)?;
         } else {
             let helper = match &helper {
                 Some(path) => path.clone(),
@@ -383,21 +392,189 @@ fn write_forward_shim(shims: &Path, helper: &Path, name: &str) -> Result<(), UEr
     Ok(())
 }
 
-/// Materialise one script shim: the tool's own script, byte for byte.
+/// Materialize one script shim: the tool's own script with self-references
+/// rebased to the deploy dir (see [`rebase_self_references`]).
 ///
-/// A verbatim copy is the whole point of the script branch — a wrapper would
-/// move the script out of its deploy layout and break `%~dp0` /
-/// `$PSScriptRoot` resolution (see [`ShimKind`]). The copied bytes are left
-/// untouched (no newline rewriting): the vendor's encoding and line endings
-/// are part of the script's correctness.
-fn copy_verbatim(source: &Path, dest: &Path) -> Result<(), UError> {
+/// The rewrite is textual and byte-faithful everywhere else (no line-ending
+/// normalization, no encoding change): the vendor's CRLF layout and every
+/// non-path byte survive untouched, and only the tokens that would otherwise
+/// resolve against `shims/` are re-anchored.
+fn rendered_script(source: &Path) -> Result<Vec<u8>, UError> {
+    let text = fs::read_to_string(source).map_err(|source_err| UError::FileError {
+        path: source.to_path_buf(),
+        source: source_err,
+    })?;
+    let base = source.parent().unwrap_or_else(|| Path::new("."));
+    Ok(rebase_self_references(&text, base).into_bytes())
+}
+
+/// Write a script shim, creating the shims dir on the way
+fn write_script_shim(dest: &Path, bytes: &[u8]) -> Result<(), UError> {
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent)
             .map_err(|source| UError::FileError { path: parent.to_path_buf(), source })?;
     }
-    fs::copy(source, dest)
-        .map_err(|source| UError::FileError { path: dest.to_path_buf(), source })?;
-    Ok(())
+    fs::write(dest, bytes).map_err(|source| UError::FileError { path: dest.to_path_buf(), source })
+}
+
+/// One self-relative reference found in a script, with its position in the
+/// original text.
+///
+/// `start..end` is the byte range of the reference's *leading token* — the
+/// engine-specific "directory of this script" idiom. The bytes of the range
+/// are replaced; anything the script appends (a path fragment, a quoting
+/// prefix) is kept, which is exactly what rebasing means.
+///
+/// `native_sep` says whether the replacement must be joined with a native
+/// separator: true when the script's own bytes carry no separator (so the
+/// original spelling was `"%~dp0" + variable` / the token ends right before a
+/// `%` jump) and false when the untouched tail already starts with `\`, `/`,
+/// a quote, or nothing at all.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SelfRef {
+    start: usize,
+    end: usize,
+    native_sep: bool,
+}
+
+/// Find every self-relative `%~dp0` / `$PSScriptRoot` reference in a script.
+///
+/// Deliberately **not** a token scan: a `.cmd` may contain the literal text
+/// `%~dp0` inside a quoted message and a `.ps1` inside a string, and neither is
+/// a doc reference to replace. Instead, each entry is anchored on the shape
+/// that actually resolves at runtime:
+///
+/// - batch: `%~dp0` / `%dp0%` immediately followed by a path fragment
+///   (`\`, `/`, `"`, `'`, or an alphanumeric) — so `echo %~dp0` (nothing
+///   appended) and a bare mention inside prose are left alone, while
+///   `"%~dp0\node_modules\..."`, `%~dp0/node` and `%~dp0%SUFFIX%` are caught;
+/// - PowerShell: the *bare* `$PSScriptRoot` token (not preceded by a word
+///   character or `$`, not followed by one, so `$env:PSScriptRoot` and
+///   `$PSScriptRootIsSet` don't match) and *not* followed by a path fragment:
+///   `"$PSScriptRoot\node"` and `"$PSScriptRoot/lib"` are rebased, while
+///   `$PSScriptRoot + '\x'` and `Join-Path $PSScriptRoot x` are left alone —
+///   those are the shapes npm's own shim uses for an *explicitly installed*
+///   global prefix, which must survive at all costs.
+fn find_self_refs(text: &str) -> Vec<SelfRef> {
+    let bytes = text.as_bytes();
+    let mut refs = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if let Some(token) = batch_token_at(bytes, i) {
+            let after = i + token;
+            // Followed by a path fragment or a `%VAR%` jump: a genuine reference
+            if fragment_follows(bytes, after) || bytes.get(after) == Some(&b'%') {
+                // `"%~dp0"` right before a quote means the separator was
+                // outside the token (`"%~dp0" + $var`, `%~dp0.x`); a following
+                // `\`, `/`, `%` or alphanumeric already supplies the join
+                let native_sep = matches!(bytes.get(after), Some(b'"' | b'\''));
+                refs.push(SelfRef { start: i, end: after, native_sep });
+            }
+            i += token;
+            continue;
+        }
+        i += 1;
+    }
+    refs.extend(pwsh_refs(text));
+    refs.sort_by_key(|r| r.start);
+    refs
+}
+
+/// Length of a batch `%~dp0` / `%dp0%` token starting at `i`, if any.
+///
+/// Case-insensitive: `CMD` and `cmd` are the same file extension here.
+///
+/// Byte-based: the caller walks the file byte by byte and may stop inside a
+/// multi-byte UTF-8 char (a leading BOM, a CJK comment), and slicing the string
+/// at such a position would panic. The token and everything it is matched
+/// against is pure ASCII, so byte comparison is exact — and because token bytes
+/// (`%`, `$`, `\`, `/`, quotes, alphanumerics) can never appear as UTF-8
+/// continuation bytes, a match starts at a real char boundary, so the positions
+/// `rebase_self_references` slices at stay valid.
+fn batch_token_at(bytes: &[u8], i: usize) -> Option<usize> {
+    const TILDE: &[u8] = b"%~dp0";
+    const PERCENT: &[u8] = b"%dp0%";
+    let rest = &bytes[i..];
+    if rest.len() >= TILDE.len() && rest[..TILDE.len()].eq_ignore_ascii_case(TILDE) {
+        return Some(TILDE.len());
+    }
+    if rest.len() >= PERCENT.len() && rest[..PERCENT.len()].eq_ignore_ascii_case(PERCENT) {
+        return Some(PERCENT.len());
+    }
+    None
+}
+
+/// Whether the byte at `i` starts a path fragment appended to a script
+/// directory reference (`\x`, `/x`, `"x`, `'x`, `x`).
+fn fragment_follows(bytes: &[u8], i: usize) -> bool {
+    bytes.get(i).is_some_and(|b| {
+        matches!(b, b'\\' | b'/' | b'"' | b'\'' | b'$') || b.is_ascii_alphanumeric()
+    })
+}
+
+/// Bare `$PSScriptRoot` occurrences that must be rebased: the automatic
+/// variable used directly as a path prefix, never the `$env:` form and never a
+/// `+`/`Join-Path` argument (those are deliberate global-prefix references).
+fn pwsh_refs(text: &str) -> Vec<SelfRef> {
+    const TOKEN: &str = "$PSScriptRoot";
+    let bytes = text.as_bytes();
+    let mut refs = Vec::new();
+    let mut from = 0;
+    while let Some(off) = text[from..].find(TOKEN) {
+        let start = from + off;
+        let end = start + TOKEN.len();
+        let before_ok = start == 0 || {
+            let prev = bytes[start - 1];
+            !prev.is_ascii_alphanumeric() && prev != b'_' && prev != b'$' && prev != b':'
+        };
+        // Only a direct directory join is rebased; `+ '\'` / `Join-Path` forms
+        // stay as the author wrote them. The tail keeps whatever separator it
+        // already had, so `base/node` never becomes a mixed-style `base\node`.
+        let after = matches!(bytes.get(end), Some(b'\\' | b'/'));
+        if before_ok && after {
+            refs.push(SelfRef { start, end, native_sep: false });
+        }
+        from = end;
+    }
+    refs
+}
+
+/// Rebase a script's self-relative references onto `base` (the deploy dir it
+/// was copied from), so a shim in `shims/` still resolves its siblings.
+///
+/// The result is the byte-identical script except for the leading token of
+/// each reference, which is replaced by `base`. Separators are composed
+/// per-token so a path never mixes styles:
+///
+/// | script wrote            | `base` = `E:\…\24.21.0` → |
+/// |-------------------------|---------------------------|
+/// | `"%~dp0\node.exe"`      | `"E:\…\24.21.0\node.exe"` |
+/// | `"%~dp0/node"`          | `"E:\…\24.21.0/node"`     |
+/// | `"%~dp0" + $var`        | `"E:\…\24.21.0" + $var`   |
+/// | `%~dp0%SUFFIX%`         | `E:\…\24.21.0%SUFFIX%`    |
+///
+/// Public so the rule is testable in isolation; `rehash` is the only caller.
+pub fn rebase_self_references(text: &str, base: &Path) -> String {
+    let refs = find_self_refs(text);
+    if refs.is_empty() {
+        return text.to_string();
+    }
+    let base = base.to_string_lossy();
+    let mut out = String::with_capacity(text.len() + refs.len() * base.len());
+    let mut cursor = 0;
+    for r in refs {
+        out.push_str(&text[cursor..r.start]);
+        out.push_str(&base);
+        // A reference whose next byte is none of `\`, `/`, a quote or a `%`
+        // jump was written as `"%~dp0" + variable`: restore the separator the
+        // quote swallowed so the join stays a real path.
+        if r.native_sep {
+            out.push('\\');
+        }
+        cursor = r.end;
+    }
+    out.push_str(&text[cursor..]);
+    out
 }
 
 #[cfg(test)]
@@ -441,12 +618,12 @@ mod tests {
         }
     }
 
-    /// The generation rule hinges on this split: scripts are copied verbatim,
-    /// programs get a forwarder. Only Windows ever sees scripts (Unix
-    /// commands are bare names), and matching must ignore case.
+    /// The generation rule hinges on this split: scripts are rebased copies,
+    /// programs get a forwarder. Only Windows ever sees scripts (Unix commands
+    /// are bare names), and matching must ignore case.
     #[test]
     fn test_shim_kind_classification() {
-        // Every file type that gets a verbatim copy, and the boundary cases
+        // Every file type that gets a script shim, and the boundary cases
         // that must stay forwarders, per platform
         if cfg!(windows) {
             assert_eq!(ShimKind::of("run.ps1"), ShimKind::Script);
@@ -461,7 +638,7 @@ mod tests {
             assert_eq!(ShimKind::of("make"), ShimKind::Forward);
         } else {
             assert_eq!(ShimKind::of("node"), ShimKind::Forward);
-            // Unix scripts are bare names, so they keep the forwarder
+            // Unix scripts are shebang files executed by name → forwarder
             assert_eq!(ShimKind::of("run.sh"), ShimKind::Forward);
         }
     }
@@ -616,35 +793,174 @@ mod tests {
         assert_eq!(load_manifest(&shims).generated, expect);
     }
 
-    /// The core of this fix: a `.cmd`/`.ps1` deploy entry is copied verbatim
-    /// into `shims/` — same bytes, no wrapper, no interpreter forwarding.
+    /// The core of the script branch: a `.cmd`/`.ps1` deploy entry lands in
+    /// `shims/` as the vendor script with its `%~dp0` / `$PSScriptRoot`
+    /// references re-anchored on the deploy dir.
     #[test]
-    fn test_rehash_copies_script_entries_verbatim() {
+    fn test_rehash_rebases_script_entries() {
         if !windows_only() {
             return; // Windows-only rule: Unix scripts are bare names
         }
         let dir = tempfile::tempdir().unwrap();
-        let script = b"@ECHO off\r\nnode \"%~dp0\\node_modules\\npm\\bin\\npm-cli.js\" %*\r\n";
+        let script = b"@ECHO off\r\n\"%~dp0\\node_modules\\npm\\bin\\npm-cli.js\" %*\r\n";
         let home = make_home_with(dir.path(), "node", "22.19.0", &["node.exe", "bin/npm.cmd"]);
         let tools = home.join("tools").join("node").join("22.19.0");
         // A vendor script whose exact bytes matter (CRLF + %~dp0), plus a
         // PowerShell entry to cover the second script extension
         fs::write(tools.join("bin").join("npm.cmd"), script).unwrap();
-        fs::write(tools.join("bin").join("setup.ps1"), b"Write-Host 'hi'\r\n").unwrap();
+        fs::write(tools.join("bin").join("setup.ps1"), b"& \"$PSScriptRoot\\do.ps1\"\r\n").unwrap();
         seed_template(&home);
 
         rehash(&home).unwrap();
 
         let shims = home.join("shims");
-        assert_eq!(
-            fs::read(shims.join("npm.cmd")).unwrap(),
-            script,
-            "script shim must be a byte-for-byte copy of the vendor script"
-        );
-        assert_eq!(fs::read(shims.join("setup.ps1")).unwrap(), b"Write-Host 'hi'\r\n");
-        // The copied script must not be a forwarder wrapper
         let copied = fs::read_to_string(shims.join("npm.cmd")).unwrap();
-        assert!(!copied.contains("uvman-shim"), "no wrapper: the vendor script is the entry");
+        let deploy = tools.join("bin").to_string_lossy().replace('/', "\\");
+        // The reference now points at the deploy dir, not at shims/
+        assert!(
+            copied.contains(&format!("\"{deploy}\\node_modules\\npm\\bin\\npm-cli.js\"")),
+            "deploy path rebased: {copied:?}"
+        );
+        assert!(!copied.contains("%~dp0"), "no self-relative reference may survive: {copied:?}");
+        // Everything else is byte-faithful, CRLF layout included
+        assert!(copied.starts_with("@ECHO off\r\n"), "bytes outside the rebase survive");
+
+        let ps1 = fs::read_to_string(shims.join("setup.ps1")).unwrap();
+        assert!(ps1.contains(&format!("\"{deploy}\\do.ps1\"")), "pwsh rebased: {ps1:?}");
+        assert!(!ps1.contains("$PSScriptRoot"), "no self-relative reference may survive: {ps1:?}");
+    }
+
+    /// A script with no self-relative reference is copied byte-for-byte.
+    #[test]
+    fn test_rehash_script_without_self_refs_is_verbatim() {
+        if !windows_only() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let home = make_home_with(dir.path(), "node", "22.19.0", &["bin/npm.cmd"]);
+        let script = b"@ECHO off\r\necho plain\r\n";
+        fs::write(home.join("tools/node/22.19.0/bin/npm.cmd"), script).unwrap();
+        rehash(&home).unwrap();
+        assert_eq!(fs::read(home.join("shims/npm.cmd")).unwrap(), script);
+    }
+
+    // -----------------------------------------------------------------
+    // rebase_self_references
+    // -----------------------------------------------------------------
+
+    fn rebase(text: &str, base: &str) -> String {
+        rebase_self_references(text, Path::new(base))
+    }
+
+    #[test]
+    fn test_rebase_batch_forms() {
+        let base = r"E:\uvman\tools\node\24.21.0";
+        assert_eq!(
+            rebase(r#""%~dp0\node_modules\npm\bin\npm-cli.js" %*"#, base),
+            format!(r#""{base}\node_modules\npm\bin\npm-cli.js" %*"#)
+        );
+        // A slash join keeps the slash: the injected dir must never make the
+        // path mix separators
+        assert_eq!(rebase(r#""%~dp0/npm-cli.js""#, base), format!(r#""{base}/npm-cli.js""#));
+        // A quote right after the token means the separator lived outside it
+        // (`"%~dp0" + $var`) and must be restored
+        assert_eq!(
+            rebase(r#"Join-Path "%~dp0" $var"#, base),
+            format!(r#"Join-Path "{base}\" $var"#)
+        );
+        // `%dp0%` is the same idiom
+        assert_eq!(rebase("call %dp0%\\setup.bat", base), format!(r#"call {base}\setup.bat"#));
+        // A `%VAR%` jump right after the dir also counts (and stays glued)
+        assert_eq!(rebase("%~dp0%EXTRA%", base), format!("{base}%EXTRA%"));
+        // Split percent form with a jump too
+        assert_eq!(rebase("%dp0%%EXTRA%", base), format!("{base}%EXTRA%"));
+    }
+
+    /// Deliberate non-matches: only shapes that actually resolve relative to
+    /// the script are rewritten.
+    #[test]
+    fn test_rebase_leaves_non_references_alone() {
+        let base = r"E:\uvman\tools\node\24.21.0";
+        // Nothing appended: the reference is not a path join here
+        assert_eq!(rebase(r"echo %~dp0", base), r"echo %~dp0");
+        assert_eq!(rebase(r"echo %~dp0 ", base), r"echo %~dp0 ");
+        // Non-batch text mentioning the token
+        assert_eq!(rebase(r"rem see %dp0x for details", base), r"rem see %dp0x for details");
+        // PowerShell: the + / Join-Path forms are global-prefix logic, not a
+        // sibling join — npm's shim installs globals through exactly this
+        let pwsh_join = "$NPM_PREFIX = Join-Path $PSScriptRoot 'global'\r\n";
+        assert_eq!(rebase(pwsh_join, base), pwsh_join);
+        let pwsh_concat = "$x = $PSScriptRoot + '\\bin'\r\n";
+        assert_eq!(rebase(pwsh_concat, base), pwsh_concat);
+        // The $env: form is a different variable entirely
+        let env_form = "$env:PSScriptRoot = 'x'\r\n";
+        assert_eq!(rebase(env_form, base), env_form);
+    }
+
+    #[test]
+    fn test_rebase_pwsh_direct_joins() {
+        let base = r"E:\uvman\tools\node\24.21.0";
+        assert_eq!(
+            rebase("& \"$PSScriptRoot\\node.exe\" $args\r\n", base),
+            format!("& \"{base}\\node.exe\" $args\r\n")
+        );
+        assert_eq!(
+            rebase("& \"$PSScriptRoot/node\" $args\r\n", base),
+            format!("& \"{base}/node\" $args\r\n")
+        );
+        // A single-quoted join works too
+        assert_eq!(
+            rebase("$p = '$PSScriptRoot\\lib'\r\n", base),
+            format!("$p = '{base}\\lib'\r\n")
+        );
+    }
+
+    /// Both idioms in one file, order preserved, everything else untouched.
+    #[test]
+    fn test_rebase_mixed_and_multiple() {
+        let base = r"E:\uvman\tools\node\24.21.0";
+        let text = "@echo off\r\nset A=\"%~dp0\\a\"\r\nset B=\"%~dp0\\%S\\b\"\r\n";
+        let want = format!("@echo off\r\nset A=\"{base}\\a\"\r\nset B=\"{base}\\%S\\b\"\r\n");
+        assert_eq!(rebase(text, base), want);
+    }
+
+    #[test]
+    fn test_rebase_is_idempotent() {
+        let base = r"E:\uvman\tools\node\24.21.0";
+        let once = rebase(r#""%~dp0\node.exe" %*"#, base);
+        assert_eq!(rebase(&once, base), once, "an already-rebased script must not drift");
+    }
+
+    /// The scan walks the file byte by byte, so a leading UTF-8 BOM or a CJK
+    /// comment must never panic it — and only genuine references are rebased.
+    #[test]
+    fn test_rebase_is_utf8_safe_with_bom_and_cjk() {
+        let base = r"E:\uvman\tools\node\24.21.0";
+        let text = "\u{feff}# 中文注释之后才是真实引用\r\n\"%~dp0\\node.exe\" %*\r\n";
+        let out = rebase(text, base);
+        assert!(out.starts_with('\u{feff}'), "BOM survives: {:?}", out);
+        assert!(out.contains(&format!(r#""{base}\node.exe""#)), "ref rebased: {out:?}");
+        assert!(out.contains("# 中文注释之后才是真实引用"), "CJK comment survives");
+
+        let pwsh = "\u{feff}# 中文注释\r\n& \"$PSScriptRoot\\tool.ps1\" $args\r\n";
+        let out = rebase(pwsh, base);
+        assert!(out.contains(r#"& "E:\uvman\tools\node\24.21.0\tool.ps1" $args"#), "{out:?}");
+    }
+
+    /// The injected base is passed through as the platform's own path text;
+    /// the script's own separator (whichever it is) is never rewritten.
+    #[test]
+    fn test_rebase_keeps_each_scripts_separator_style() {
+        // Forward-slash join stays forward-slash — npm.ps1 relies on this
+        assert_eq!(
+            rebase(r#""%~dp0/node_modules/npm/bin/npm-cli.js""#, r"E:\uvman\tools\node\24.21.0"),
+            r#""E:\uvman\tools\node\24.21.0/node_modules/npm/bin/npm-cli.js""#
+        );
+        // Backslash join stays backslash
+        assert_eq!(
+            rebase(r#""%~dp0\node_modules\npm\bin\npm-cli.js""#, r"E:\uvman\tools\node\24.21.0"),
+            r#""E:\uvman\tools\node\24.21.0\node_modules\npm\bin\npm-cli.js""#
+        );
     }
 
     /// Script entries are copied, so a rehash must be able to find them in the
@@ -719,6 +1035,40 @@ mod tests {
         fs::write(&script, b"@ECHO off\r\necho v2\r\n").unwrap();
         rehash(&home).unwrap();
         assert_eq!(fs::read(&shim).unwrap(), b"@ECHO off\r\necho v2\r\n");
+    }
+
+    /// Drift detection compares against the *rebased* rendering, so a shim
+    /// whose deploy moved (or whose rebasing rule changed) reports stale.
+    #[test]
+    fn test_shim_is_broken_for_drifted_script_copy() {
+        if !windows_only() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let home = make_home_with(dir.path(), "node", "22.19.0", &["bin/npm.cmd"]);
+        let source = home.join("tools/node/22.19.0/bin/npm.cmd");
+        // A script with a self-reference: the rebased rendering is what rehash
+        // writes, and only that rendering counts as healthy
+        fs::write(&source, b"@ECHO off\r\ncall \"%~dp0\\npm-cli.cmd\" %*\r\n").unwrap();
+        rehash(&home).unwrap();
+
+        let shims = home.join("shims");
+        assert!(!shim_is_broken(&home, &shims, "npm.cmd"), "fresh rebased copy is healthy");
+
+        // The deploy moved to another dir → the copy points at the old path
+        fs::rename(home.join("tools/node/22.19.0"), home.join("tools/node/22.19.0.moved")).unwrap();
+        let moved = home.join("tools/node/22.19.0.moved");
+        fs::create_dir_all(&moved).unwrap();
+        fs::rename(home.join("tools/node/22.19.0.moved/bin"), moved.join("bin")).ok();
+        assert!(
+            shim_is_broken(&home, &shims, "npm.cmd"),
+            "a copy that no longer matches its deploy is stale"
+        );
+
+        // A pre-0.3.5 verbatim copy (self-reference intact) is stale too
+        fs::write(shims.join("npm.cmd"), b"@ECHO off\r\ncall \"%~dp0\\npm-cli.cmd\" %*\r\n")
+            .unwrap();
+        assert!(shim_is_broken(&home, &shims, "npm.cmd"), "unrebased copy is stale");
     }
 
     #[test]
