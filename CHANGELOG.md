@@ -2,6 +2,19 @@
 
 uvman 所有显著变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)；每个版本对应一个 GitHub Release，详见各版本链接。
 
+## [v0.3.4](https://github.com/xxxyixuan/uvman/releases/tag/v0.3.4) — 2026-09-20
+
+`shims/` 入口按源文件类型分两种生成方式：可执行程序生成转发器，脚本文件（Windows `.ps1`/`.cmd`/`.bat`）逐字节复制原文，脚本相对路径依赖在 shims 内原位解析；一致性校验同时覆盖两类入口。
+
+### 新增特性
+
+- shims 按文件类型分类生成入口：可执行程序（Windows `.exe`、Unix 无扩展名二进制）生成 `uvman-shim` 转发器（透传参数与退出码，与 `which` 同源解析）；脚本文件（`.ps1`/`.cmd`/`.bat`）逐字节复制工具自带原始脚本到 `shims/`，不经转发（[b322236](https://github.com/xxxyixuan/uvman/commit/b322236)）
+
+### 优化与改进
+
+- 脚本入口必须「复制原文」而非包一层转发：脚本普遍用 `%~dp0` / `$PSScriptRoot` 定位同级依赖（如 `npm.cmd` 紧邻 `node.exe` 与 `node_modules/`），转发会改变脚本所在目录致相对路径失效
+- 一致性校验覆盖两类入口：`rehash` / `status` / `doctor` 检查转发器「是否仍能解析到激活版本真实二进制」、脚本入口「与部署源是否逐字节一致」，任一漂移提示 `uvman shims rehash`（[b322236](https://github.com/xxxyixuan/uvman/commit/b322236)）
+
 ## [v0.3.3](https://github.com/xxxyixuan/uvman/releases/tag/v0.3.3) — 2026-09-16
 
 uvman-shim 转发逻辑内联为无依赖实现、构建更稳定；release 构建针对二进制体积优化。
