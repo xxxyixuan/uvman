@@ -2,6 +2,25 @@
 
 uvman 所有显著变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)；每个版本对应一个 GitHub Release，详见各版本链接。
 
+## [v0.3.6](https://github.com/xxxyixuan/uvman/releases/tag/v0.3.6) — 2026-09-20
+
+shims 改为全转发架构：删除「复制 + 自引用重写」机制，每个命令只生成一个 `.exe` 转发器，运行时按调用终端类型选择部署目录中的具体脚本形态执行。这修掉了 0.3.5 仍未覆盖的一整类脚本入口失效（`$basedir` 等 npm 生态自引用写法）。
+
+### 破坏性变更
+
+- 脚本类 shim 从同名脚本（`npm.cmd`/`npm.ps1`）改为统一的 `<命令>.exe` 转发器：`rehash` 后 `shims/` 下每个命令只有一个入口（命令调用方式不变）；迁移旧生成物过程：`shims status` / `doctor` 会把旧名报告为过期，`uvman shims rehash` 一次性清理重建
+
+### Bug 修复
+
+- 修复 npm 生态脚本入口失效（0.3.5 重写规则未覆盖）：`npm install pnpm -g` 生成的 `pnpm.ps1` 等使用 `$basedir=Split-Path $MyInvocation.MyCommand.Definition` 的自引用写法，复制到 `shims/` 后 `$basedir` 指向 `shims/`，`pnpm -v` 报 `E:\devtools\uvman\shims\node_modules\pnpm\pnpm.exe` 找不到。全转发后脚本在部署目录内执行，`$basedir`/`%~dp0`/`$PSScriptRoot` 天然正确
+- 删除「复制 + 自引用重写」机制（含 BOM/UTF-8 修补），消除整类「重写规则永远差一种写法」的维护隐患
+
+### 优化与改进
+
+- `shims` 每命令单入口：`npm`/`npm.cmd`/`npm.ps1`/裸名 shebang 脚本归并为 `npm.exe`，cmd/PowerShell/git-bash 均能命中；无扩展名裸命令（shebang 脚本）也纳入命令集
+- 转发器按终端类型选择部署入口：git-bash/MSYS（`OSTYPE`/`MSYSTEM`/`SHELL`）优先裸名脚本经 `sh` 运行、PowerShell（`PSModulePath`）优先 `.ps1`、cmd/GUI 按 `.exe`→`.cmd` 顺序；纯启发式，README 记录局限
+- `rehash` 每轮必装 helper（脚本不再免 helper）；一致性校验统一为「命令任意形态存在即健康」
+
 ## [v0.3.5](https://github.com/xxxyixuan/uvman/releases/tag/v0.3.5) — 2026-09-20
 
 修复 0.3.4 引入的 shims 脚本入口失效问题：`.cmd`/`.bat`/`.ps1` 复制到 `shims/` 后，脚本内的 `%~dp0` / `$PSScriptRoot` 会解析到 `shims/` 而非真实部署目录，导致 `npm --version` 等命令报 `Cannot find module ... npm-prefix.js`。现在生成脚本入口时会把这类自引用重写到部署目录的绝对路径。

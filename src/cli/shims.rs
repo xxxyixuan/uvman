@@ -261,15 +261,18 @@ fn shims_count(shims_dir: &std::path::Path) -> Option<usize> {
 }
 
 /// First PATH entry (other than the shims dir) containing a same-named
-/// command; used for the shadow warning.
+/// command; used for the shadow warning. The shim has the command's own file
+/// name stripped of its `.exe`; any deployment form of that command elsewhere
+/// on PATH (bare, `.exe`, `.cmd`, `.bat`, `.ps1`) shadows the shim.
 fn shadowing_path_entry(shims_dir: &std::path::Path, name: &str) -> Option<std::path::PathBuf> {
+    let command = shims::command_of_shim(name);
     let candidates: Vec<std::path::PathBuf> = if cfg!(windows) {
-        [".exe", ".cmd", ".bat", ".ps1"]
-            .iter()
-            .map(|e| std::path::PathBuf::from(format!("{name}{e}")))
+        std::iter::once(command.to_string())
+            .chain([".exe", ".cmd", ".bat", ".ps1"].iter().map(|e| format!("{command}{e}")))
+            .map(std::path::PathBuf::from)
             .collect()
     } else {
-        vec![std::path::PathBuf::from(name)]
+        vec![std::path::PathBuf::from(command)]
     };
     let path_var = std::env::var_os("PATH").unwrap_or_default();
     for item in std::env::split_paths(&path_var) {
@@ -335,7 +338,23 @@ mod tests {
         std::fs::create_dir_all(&shims).unwrap();
         let name = if cfg!(windows) { "node.exe" } else { "node" };
         std::fs::write(shims.join(name), b"x").unwrap();
+        // Control PATH so the real environment can't leak a same-named entry
+        let other = dir.path().join("other");
+        std::fs::create_dir_all(&other).unwrap();
+        let old_path = std::env::var_os("PATH");
+        let controlled = format!("{};{}", shims.display(), other.display());
+        unsafe { std::env::set_var("PATH", &controlled) };
+
         // Only the shims dir holds it: no shadow
         assert_eq!(shadowing_path_entry(&shims, name), None);
+        // The same command in another PATH dir shadows the shim
+        std::fs::write(other.join(name), b"x").unwrap();
+        assert_eq!(shadowing_path_entry(&shims, name), Some(other));
+
+        if let Some(old) = old_path {
+            unsafe { std::env::set_var("PATH", old) };
+        } else {
+            unsafe { std::env::remove_var("PATH") };
+        }
     }
 }

@@ -204,39 +204,32 @@ uvman plugin install mytool --path ./mytool.toml   # 安装本地自定义插件
 
 ### GUI 场景：shims
 
-图形化进程继承 Explorer（注册表）环境，看不到 `activate` 的会话注入。解法是 shims：用户 PATH 中只放**一个稳定目录** `shims/`，目录内是按命令名生成的入口。入口按文件类型分两种生成方式：
+图形化进程继承 Explorer（注册表）环境，看不到 `activate` 的会话注入。解法是 shims：用户 PATH 中只放**一个稳定目录** `shims/`，目录内每个命令一个转发器入口。**所有类型（可执行程序与脚本）统一走转发器**：
 
-| 源文件类型 | 生成方式 | 调用链 |
-| ---------- | -------- | ------ |
-| 可执行程序（**Windows**：`.exe`；**Unix**：无扩展名二进制与 shebang 脚本） | 转发器（`uvman-shim` 的拷贝），调用时经统一解析入口（`core::resolve`）定位激活版本的真实二进制并透传参数与退出码——与 `which` 完全同源 | GUI → `shims\node.exe` → 解析入口 → `tools\node\24.21.0\node.exe` |
-| 脚本文件（仅 Windows：`.ps1` / `.cmd` / `.bat`） | 复制工具自带的原始脚本到 `shims/`，并把脚本内的**自引用路径重写到部署目录** | GUI → `shims\npm.cmd`（原脚本本身，但 `%~dp0` 已指向 `tools\node\24.21.0\`） |
+| 命令形态 | 生成方式 | 调用链 |
+| -------- | -------- | ------ |
+| 所有命令（`.exe`、`.cmd`/`.bat`/`.ps1`、无扩展名 shebang 脚本） | 每个命令一个 `uvman-shim` 拷贝，命名 `<命令>.exe`（如 `node.exe`、`npm.exe`） | GUI → `shims\npm.exe` → 按终端类型选部署脚本 → 脚本在部署目录内执行 |
 
-脚本无法用「转发」实现：脚本普遍用 `%~dp0` / `$PSScriptRoot` 定位同级依赖（如 `npm.cmd` 需要紧邻 `node.exe` 与 `node_modules/`），一旦换成另起进程转发，脚本自身所在的目录就变了。但**单纯逐字节复制同样不行**——复制到 `shims/` 后 `%~dp0` 会解析成 `shims\`，`shims\node_modules\npm\bin\npm-prefix.js` 并不存在（0.3.4 的实际故障）。因此生成脚本入口时会把这类自引用 token 重写为部署目录的绝对路径：
+一个命令在部署目录里可能有多种文件形态并存（Node 发行版同时带裸名 `npm`、`npm.cmd`、`npm.ps1`）。转发器按**调用终端类型**选择形态，让每种终端都拿到自己原生的那支：
 
-```text
-原脚本（tools\node\24.21.0\bin\npm.cmd）
-    SET "NPM_CLI_JS=%~dp0\node_modules\npm\bin\npm-cli.js"
+- **git-bash / MSYS / Unix 风格**（检测 `OSTYPE` / `MSYSTEM` / `SHELL`）：优先裸名 shebang 脚本，经 `sh` 解释器运行
+- **PowerShell**（检测 `PSModulePath`）：优先 `.ps1`（管道与 `$MyInvocation` 语义完整）
+- **cmd.exe / GUI / 其他**：按 `.exe` → `.cmd` → `.bat` → `.ps1` 顺序
 
-shims\npm.cmd（重写后）
-    SET "NPM_CLI_JS=E:\devtools\uvman\tools\node\24.21.0\bin\node_modules\npm\bin\npm-cli.js"
-```
-
-其余字节（CRLF、编码、注释）原样保留。重写规则刻意做得保守，只匹配**实际会解析成相对路径**的写法，保留作者有意写死的语义：
-
-- 批处理：只重写后面紧跟路径片段或 `%VAR%` 跳转的 `%~dp0` / `%dp0%`（`"%~dp0\node_modules\..."`、`%~dp0%SUFFIX%`）
-- PowerShell：只重写直接拼路径的裸 `$PSScriptRoot`（`"$PSScriptRoot\node"`）；`Join-Path $PSScriptRoot`、`$PSScriptRoot + '\'`、`$env:PSScriptRoot` 一律不动——npm 的 `npm.ps1` 正是用这些形式引用显式安装的全局 prefix，改掉会破坏全局包行为
-- 分隔符按脚本原样保留：`%~dp0/x` 保持 `/`（`npm.ps1` 依赖此形式），`%~dp0\x` 保持 `\`
+脚本在**部署目录内**执行，`%~dp0` / `$PSScriptRoot` / `$basedir` 等一切自引用天然正确——这正是 0.3.4/0.3.5「复制 + 重写自引用」方案做不到的（npm 生态的 `pnpm.ps1` 等脚本用 `$basedir=Split-Path $MyInvocation...` 写法，重写规则永远差一种）。转发器对脚本做解释器间接调用（Windows 的 `.cmd`/`.bat` 走 `cmd.exe /c`、`.ps1` 走 `pwsh -File`、裸 shebang 走 `sh`；Unix 的 `.sh`/`.zsh`/`.fish` 走对应解释器）：
 
 ```text
-可执行程序（转发）            脚本文件（复制 + 自引用重写）
-GUI → shims\node.exe          GUI → shims\npm.cmd
-    → 解析入口（全局激活）          → 同 tools\node\24.21.0\npm.cmd，但自引用指向部署目录
-    → tools\node\24.21.0\node.exe
+cmd/PowerShell/git-bash
+    → shims\npm.exe（uvman-shim 转发器）
+    → 按终端类型解析：npm.cmd（cmd）/ npm.ps1（PowerShell）/ npm（git-bash）
+    → 解释器执行：cmd.exe /c · pwsh -File · sh
+    → tools\node\24.21.0\npm.cmd 等（脚本自身目录不迁移，自引用全部有效）
 ```
 
 - `install` / `uninstall` / `use` 后自动重建（rehash）；`shims/` 内的 manifest 只清理 uvman 自己生成的文件
-- 两种入口都在每次 `rehash` / `status` / `doctor` 时做一致性校验：转发器检查「是否仍能解析到激活版本的真实二进制」，脚本入口检查「是否与当前重写结果一致」，任一漂移都会提示 `uvman shims rehash`（因此升级 uvman 后旧的重写结果会被判定为过期，rehash 一次即可）
-- `uvman-shim` 转发器同时具备解释器间接调用能力（Windows `.cmd`/`.bat` 走 `cmd.exe /c`、`.ps1` 走 `pwsh -File`；Unix 的 `.sh`/`.zsh`/`.fish` 走对应解释器），以覆盖手工放置或跨平台部署的脚本命令
+- 每次 `rehash` / `status` / `doctor` 做一致性校验：命令在任一激活工具中以任意形态存在即健康，否则提示 `uvman shims rehash`
+- **终端类型检测是启发式**：依赖环境变量（`OSTYPE`/`MSYSTEM`/`SHELL`/`PSModulePath`），极端混用环境下可能选到非预期形态；可用 `UVMAN_SHIM_AS` 手工覆盖命令名辅助调试
+- 裸命令形态（无扩展名文件）只有含 shebang 才算可用入口；普通文本文件不会被误当成命令
 - `use` 切换版本**永不**触碰注册表；注册表写入只发生在 `shims enable` / `disable`（HKCU，备份先行、类型保真、广播 `WM_SETTINGCHANGE`）
 - 边界：转发入口不注入 `[env]` 自定义环境变量（GUI 进程继承 Explorer 环境，属已知边界）；`activate` 的会话刷新只剥离 `tools/` 前缀条目，不影响 `shims/` 条目
 
@@ -255,7 +248,7 @@ GUI → shims\node.exe          GUI → shims\npm.cmd
 ── tools/<tool>/<version>/   # 已安装的工具版本
 ── shims/                # 按命令名生成的入口（GUI/IDE 场景，PATH 稳定目录）
 │   ── .uvman/           # 内部 helper 与 manifest（用户无需关心）
-│                       #   可执行程序 → 转发器；脚本（.ps1/.cmd/.bat）→ 原文复制
+│                       #   每个命令一个转发器（含 .cmd/.bat/.ps1/裸脚本）
 ── plugins/              # 已安装的 TOML 插件
 ── cache/                # 下载缓存与远端版本缓存（TTL 控制）
 ── backup/               # shims enable/disable 写入前的用户 PATH 备份
